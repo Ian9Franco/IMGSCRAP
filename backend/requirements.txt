@@ -1,0 +1,10 @@
+customtkinter
+requests
+beautifulsoup4
+pillow
+validators
+python-docx
+pywinstyles
+fastapi
+uvicorn
+python-multipart
