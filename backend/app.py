@@ -10,20 +10,26 @@ import subprocess
 import json
 from scraper import ImageScraper
 from image_classifier import load_model, is_model_ready, classify_image, NICHO_TAGS
+from copy_generator import generate_copy
+from document_generator import generate_property_doc
 
 CONFIG_FILE = "config.json"
 DEFAULT_BASE_DIR = "D:\\Dev\\imgscrap"
 
-def get_base_dir():
+def get_config():
     if not os.path.exists(CONFIG_FILE):
-        return DEFAULT_BASE_DIR
+        return {"base_dir": DEFAULT_BASE_DIR, "openai_api_key": ""}
     try:
         with open(CONFIG_FILE, "r") as f:
-            return json.load(f).get("BASE_DIR", DEFAULT_BASE_DIR)
+            config = json.load(f)
+            return {
+                "base_dir": config.get("BASE_DIR", DEFAULT_BASE_DIR),
+                "openai_api_key": config.get("OPENAI_API_KEY", "")
+            }
     except:
-        return DEFAULT_BASE_DIR
+        return {"base_dir": DEFAULT_BASE_DIR, "openai_api_key": ""}
 
-def set_base_dir(new_dir: str):
+def set_config(new_dir: str, api_key: str = ""):
     data = {}
     if os.path.exists(CONFIG_FILE):
         try:
@@ -32,12 +38,14 @@ def set_base_dir(new_dir: str):
         except:
             pass
     data["BASE_DIR"] = new_dir
+    if api_key:
+        data["OPENAI_API_KEY"] = api_key
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f)
     os.makedirs(new_dir, exist_ok=True)
-    return new_dir
+    return data
 
-os.makedirs(get_base_dir(), exist_ok=True)  # Me aseguro de que mi carpeta base siempre exista
+os.makedirs(get_config()["base_dir"], exist_ok=True)  # Me aseguro de que mi carpeta base siempre exista
 
 app = FastAPI(title="Image Scraper API")
 
@@ -74,6 +82,12 @@ class ExportRequest(BaseModel):
 
 class ConfigRequest(BaseModel):
     base_dir: str
+    openai_api_key: str = ""
+
+class CopyRequest(BaseModel):
+    nicho: str
+    data: dict
+    property_folder: str  # para saber dónde guardar el docx
 
 def start_scrape_job(job_id: str, url: str, dest_folder: str, only_large: bool, use_ai: bool, nicho: str):
     min_res = (600, 600) if only_large else (300, 300)
@@ -111,12 +125,12 @@ def finish_job(job_id: str, message: str):
 
 @app.get("/api/config")
 def api_get_config():
-    return {"base_dir": get_base_dir()}
+    return get_config()
 
 @app.post("/api/config")
 def api_set_config(req: ConfigRequest):
-    new_dir = set_base_dir(req.base_dir)
-    return {"status": "success", "base_dir": new_dir}
+    new_config = set_config(req.base_dir, req.openai_api_key)
+    return {"status": "success", "config": new_config}
 
 @app.get("/api/ai/status")
 def api_ai_status():
@@ -194,9 +208,33 @@ def api_rename_image(req: RenameRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al renombrar: {str(e)}")
 
+@app.post("/api/copy/generate")
+def api_generate_copy(req: CopyRequest):
+    config = get_config()
+    api_key = config.get("openai_api_key", "")
+    
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Falta configurar la OpenAI API KEY")
+        
+    copy_text = generate_copy(req.nicho, req.data, api_key)
+    
+    # Si la generación fue exitosa (no empieza con ⚠️), generamos el DOCX también
+    if not copy_text.startswith("⚠️"):
+        # La ruta es relativa a la base o absoluta
+        folder_path = os.path.join(config["base_dir"], req.property_folder)
+        if os.path.exists(folder_path):
+            generate_property_doc(
+                folder_path, 
+                req.data.get("title", "Propiedad"), 
+                copy_text, 
+                req.data.get("features", [])
+            )
+            
+    return {"copy": copy_text}
+
 @app.post("/api/images/export")
 def api_export_images(req: ExportRequest):
-    source_folder = os.path.join(get_base_dir(), req.property_name)
+    source_folder = os.path.join(get_config()["base_dir"], req.property_name)
     if not os.path.exists(source_folder):
         raise HTTPException(
             status_code=404,
@@ -263,7 +301,7 @@ def api_serve_image(path: str):
 
 @app.get("/api/images/history")
 def api_get_history():
-    base_dir = get_base_dir()
+    base_dir = get_config()["base_dir"]
     if not os.path.exists(base_dir):
         return {"folders": []}
     folders = sorted([
@@ -274,7 +312,7 @@ def api_get_history():
 
 @app.get("/api/images/history/folder")
 def api_get_history_folder(name: str):
-    folder_path = os.path.join(get_base_dir(), name)
+    folder_path = os.path.join(get_config()["base_dir"], name)
     if not os.path.exists(folder_path):
         raise HTTPException(status_code=404, detail=f"Carpeta no encontrada: {folder_path}")
     images = sorted([

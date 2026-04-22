@@ -63,12 +63,13 @@ Sin preguntas.
 
 ## Módulo 2 — Generador de Copy
 
-### 🟡 Fase 1 – Integración básica
+### ✅ Fase 1 – Integración básica *(completada)*
 
-- [ ] Módulo separado, NO mezclado con el scraper
-- [ ] Integrar API LLM externa (GPT o Claude) — no IA local, no tiene sentido acá
-- [ ] Generar copy estructurado (no "hacé un copy lindo")
-- [ ] Exportar resultado a DOCX con `python-docx`
+- [x] Módulo nuevo "Generador de Copy" en el backend (`copy_generator.py`)
+- [x] Integración con OpenAI GPT-4o-mini
+- [x] Prompt estructurado (Hook, Descripción, Specs, CTA)
+- [x] Exportación automática a Word (.docx)
+- [x] Interfaz de usuario con visor de copy y botón de copiar
 
 **Estructura de prompt fija:**
 ```
