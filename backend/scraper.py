@@ -17,6 +17,7 @@ class ImageScraper:
         self.use_ai = use_ai
         self.nicho = nicho
         self.is_running = False
+        self._tag_counters = {}  # Cuenta cuántas fotos hay por cada tag: {"cocina": 2, "fachada": 1, ...}
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
         }
@@ -128,8 +129,14 @@ class ImageScraper:
                             except Exception as e:
                                 print(f"[CLIP] Error en clasificación: {e}")
 
-                        # La paso a JPEG para que pese menos y sea más compatible
-                        filename = f"image_{int(time.time() * 1000)}_{downloaded_count}.jpg"
+                        # Nombre del archivo: usa el ai_tag si hay IA activa, sino nombre genérico
+                        if self.use_ai and ai_tag:
+                            tag_slug = ai_tag.lower().replace(" ", "_")
+                            count = self._tag_counters.get(tag_slug, 0) + 1
+                            self._tag_counters[tag_slug] = count
+                            filename = f"{tag_slug}_{count}.jpg"
+                        else:
+                            filename = f"image_{int(time.time() * 1000)}_{downloaded_count}.jpg"
                         filepath = os.path.join(image_path, filename)
                         
                         # La guardo con buena calidad para no perder detalles

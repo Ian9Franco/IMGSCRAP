@@ -12,6 +12,7 @@ from scraper import ImageScraper
 from image_classifier import load_model, is_model_ready, classify_image, NICHO_TAGS
 from copy_generator import generate_copy
 from document_generator import generate_property_doc
+from property_extractor import extract_property_data
 
 CONFIG_FILE = "config.json"
 DEFAULT_BASE_DIR = "D:\\Dev\\imgscrap"
@@ -87,7 +88,11 @@ class ConfigRequest(BaseModel):
 class CopyRequest(BaseModel):
     nicho: str
     data: dict
-    property_folder: str  # para saber dónde guardar el docx
+    property_folder: str
+
+class ExtractRequest(BaseModel):
+    url: str
+    nicho: str = "inmobiliaria"
 
 def start_scrape_job(job_id: str, url: str, dest_folder: str, only_large: bool, use_ai: bool, nicho: str):
     min_res = (600, 600) if only_large else (300, 300)
@@ -212,25 +217,25 @@ def api_rename_image(req: RenameRequest):
 def api_generate_copy(req: CopyRequest):
     config = get_config()
     api_key = config.get("openai_api_key", "")
-    
-    if not api_key:
-        raise HTTPException(status_code=400, detail="Falta configurar la OpenAI API KEY")
-        
+    # Si no hay API key usa el template local automáticamente (no bloquea)
     copy_text = generate_copy(req.nicho, req.data, api_key)
     
-    # Si la generación fue exitosa (no empieza con ⚠️), generamos el DOCX también
     if not copy_text.startswith("⚠️"):
-        # La ruta es relativa a la base o absoluta
         folder_path = os.path.join(config["base_dir"], req.property_folder)
         if os.path.exists(folder_path):
             generate_property_doc(
-                folder_path, 
-                req.data.get("title", "Propiedad"), 
-                copy_text, 
+                folder_path,
+                req.data.get("title", "Propiedad"),
+                copy_text,
                 req.data.get("features", [])
             )
-            
     return {"copy": copy_text}
+
+@app.post("/api/property/extract")
+def api_extract_property(req: ExtractRequest):
+    """Extrae metadatos (título, precio, ubicación, características) de la URL de la propiedad."""
+    data = extract_property_data(req.url, req.nicho)
+    return data
 
 @app.post("/api/images/export")
 def api_export_images(req: ExportRequest):
@@ -255,40 +260,22 @@ def api_export_images(req: ExportRequest):
 
 @app.get("/api/browse/folder")
 def api_browse_folder():
-    """Abro un explorador de carpetas bonito usando PowerShell."""
+    """Abre el explorador de carpetas nativo de Windows y devuelve la ruta elegida."""
     try:
-        # Truquito de PowerShell: uso OpenFileDialog configurado para carpetas 
-        # para que se vea como el Explorador de Windows de siempre, y no el arbolito viejo.
         ps_script = (
             "Add-Type -AssemblyName System.Windows.Forms; "
-            "$f = New-Object System.Windows.Forms.OpenFileDialog; "
-            "$f.Filter = 'Carpetas|*.none'; "
-            "$f.CheckFileExists = $false; "
-            "$f.CheckPathExists = $true; "
-            "$f.ValidateNames = $false; "
-            "$f.FileName = 'Seleccionar Carpeta'; "
-            "$f.Title = 'Seleccioná la carpeta de destino'; "
-            "if($f.ShowDialog() -eq 'OK') { Split-Path $f.FileName }"
+            "$dlg = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            "$dlg.Description = 'Seleccioná la carpeta'; "
+            "$dlg.UseDescriptionForTitle = $true; "
+            "$dlg.ShowNewFolderButton = $true; "
+            "if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
+            "{ Write-Output $dlg.SelectedPath }"
         )
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
             capture_output=True, text=True, timeout=120, encoding="utf-8"
         )
         path = result.stdout.strip()
-        # Por si el truco de arriba falla, tengo este método de respaldo con el arbolito tradicional por las dudas.
-        if not path:
-             ps_script_fallback = (
-                "Add-Type -AssemblyName System.Windows.Forms; "
-                "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
-                "$d.Description = 'Seleccioná la carpeta de destino'; "
-                "if($d.ShowDialog() -eq 'OK') { $d.SelectedPath }"
-             )
-             result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script_fallback],
-                capture_output=True, text=True, timeout=120, encoding="utf-8"
-             )
-             path = result.stdout.strip()
-
         return {"path": path}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
