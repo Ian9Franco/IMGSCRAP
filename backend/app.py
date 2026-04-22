@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import json
 from scraper import ImageScraper
+from image_classifier import load_model, is_model_ready, classify_image, NICHO_TAGS
 
 CONFIG_FILE = "config.json"
 DEFAULT_BASE_DIR = "D:\\Dev\\imgscrap"
@@ -40,6 +41,10 @@ os.makedirs(get_base_dir(), exist_ok=True)  # Me aseguro de que mi carpeta base 
 
 app = FastAPI(title="Image Scraper API")
 
+# Cargo el modelo CLIP en background al arrancar para que esté listo cuando el usuario lo necesite
+_clip_thread = threading.Thread(target=load_model, daemon=True)
+_clip_thread.start()
+
 # Configuro CORS para que mi frontend en Next.js se pueda conectar sin problemas
 app.add_middleware(
     CORSMiddleware,
@@ -55,6 +60,9 @@ jobs = {}
 class ScrapeRequest(BaseModel):
     url: str
     dest_folder: str
+    only_large: bool = False
+    nicho: str = "inmobiliaria"   # nicho para el auto-tagging CLIP
+    use_ai: bool = False          # activar clasificación IA (requiere modelo cargado)
 
 class RenameRequest(BaseModel):
     old_path: str
@@ -67,11 +75,15 @@ class ExportRequest(BaseModel):
 class ConfigRequest(BaseModel):
     base_dir: str
 
-def start_scrape_job(job_id: str, url: str, dest_folder: str):
+def start_scrape_job(job_id: str, url: str, dest_folder: str, only_large: bool, use_ai: bool, nicho: str):
+    min_res = (600, 600) if only_large else (300, 300)
     scraper = ImageScraper(
         callback_progress=lambda curr, tot, msg: update_job_progress(job_id, curr, tot, msg),
-        callback_thumbnail=lambda path, thumb: add_job_image(job_id, path),
-        callback_finished=lambda msg: finish_job(job_id, msg)
+        callback_thumbnail=lambda path, thumb, w, h, tag: add_job_image(job_id, path, w, h, tag),
+        callback_finished=lambda msg: finish_job(job_id, msg),
+        min_resolution=min_res,
+        use_ai=use_ai,
+        nicho=nicho,
     )
     jobs[job_id]["scraper"] = scraper
     # Le paso la misma ruta a los dos campos para que no me arme subcarpetas innecesarias
@@ -83,9 +95,14 @@ def update_job_progress(job_id: str, current: int, total: int, message: str):
         jobs[job_id]["total"] = total
         jobs[job_id]["message"] = message
 
-def add_job_image(job_id: str, path: str):
+def add_job_image(job_id: str, path: str, width: int, height: int, ai_tag: str | None = None):
     if job_id in jobs:
-        jobs[job_id]["images"].append(path)
+        jobs[job_id]["images"].append({
+            "path": path,
+            "width": width,
+            "height": height,
+            "ai_tag": ai_tag,
+        })
 
 def finish_job(job_id: str, message: str):
     if job_id in jobs:
@@ -101,6 +118,16 @@ def api_set_config(req: ConfigRequest):
     new_dir = set_base_dir(req.base_dir)
     return {"status": "success", "base_dir": new_dir}
 
+@app.get("/api/ai/status")
+def api_ai_status():
+    """Informa si el modelo CLIP ya está cargado y listo para clasificar."""
+    return {"ready": is_model_ready()}
+
+@app.get("/api/ai/nichos")
+def api_ai_nichos():
+    """Devuelve los nichos disponibles para el auto-tagging."""
+    return {"nichos": list(NICHO_TAGS.keys())}
+
 @app.post("/api/scrape/start")
 def api_start_scrape(req: ScrapeRequest):
     job_id = str(uuid.uuid4())
@@ -113,7 +140,7 @@ def api_start_scrape(req: ScrapeRequest):
         "scraper": None
     }
     
-    thread = threading.Thread(target=start_scrape_job, args=(job_id, req.url, req.dest_folder))
+    thread = threading.Thread(target=start_scrape_job, args=(job_id, req.url, req.dest_folder, req.only_large, req.use_ai, req.nicho))
     thread.daemon = True
     thread.start()
     

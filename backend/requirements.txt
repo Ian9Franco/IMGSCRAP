@@ -8,3 +8,5 @@ pywinstyles
 fastapi
 uvicorn
 python-multipart
+ImageHash
+sentence-transformers

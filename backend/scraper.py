@@ -6,12 +6,16 @@ from PIL import Image
 from io import BytesIO
 import threading
 import time
+import imagehash
 
 class ImageScraper:
-    def __init__(self, callback_progress=None, callback_thumbnail=None, callback_finished=None):
+    def __init__(self, callback_progress=None, callback_thumbnail=None, callback_finished=None, min_resolution=(300, 300), use_ai=False, nicho="inmobiliaria"):
         self.callback_progress = callback_progress
         self.callback_thumbnail = callback_thumbnail
         self.callback_finished = callback_finished
+        self.min_resolution = min_resolution
+        self.use_ai = use_ai
+        self.nicho = nicho
         self.is_running = False
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
@@ -70,6 +74,7 @@ class ImageScraper:
                 self.callback_progress(0, total, "Analizando imágenes...")
 
             seen_urls = set()
+            seen_hashes = set()
             downloaded_count = 0
 
             for i, tag in enumerate(img_tags):
@@ -80,7 +85,7 @@ class ImageScraper:
                 if not img_url:
                     continue
                     
-                # Ignoro los vectores, logos e iconos chiquitos que no me sirven
+                # Ignoro los vectores, logos e iconos chiquitos que no me sirven por nombre
                 lower_url = img_url.lower()
                 if lower_url.endswith('.svg') or 'logo' in lower_url or 'icon' in lower_url:
                     continue
@@ -96,6 +101,33 @@ class ImageScraper:
                         img_data = img_resp.content
                         img = Image.open(BytesIO(img_data))
                         
+                        # Filtro por resolución mínima
+                        width, height = img.size
+                        if width < self.min_resolution[0] or height < self.min_resolution[1]:
+                            # print(f"Imagen ignorada por tamaño: {width}x{height}")
+                            continue
+
+                        # Deduplicación perceptual (ImageHash)
+                        img_hash = str(imagehash.average_hash(img))
+                        if img_hash in seen_hashes:
+                            # print(f"Imagen duplicada (hash) ignorada: {img_url}")
+                            continue
+                        seen_hashes.add(img_hash)
+
+                        # Clasificación IA opcional (CLIP)
+                        ai_tag = None
+                        if self.use_ai:
+                            try:
+                                from image_classifier import classify_image, is_model_ready
+                                if is_model_ready():
+                                    result = classify_image(img, self.nicho)
+                                    if result["is_garbage"]:
+                                        # print(f"Imagen descartada por IA (basura): {img_url}")
+                                        continue
+                                    ai_tag = result["top_tag"]
+                            except Exception as e:
+                                print(f"[CLIP] Error en clasificación: {e}")
+
                         # La paso a JPEG para que pese menos y sea más compatible
                         filename = f"image_{int(time.time() * 1000)}_{downloaded_count}.jpg"
                         filepath = os.path.join(image_path, filename)
@@ -111,12 +143,12 @@ class ImageScraper:
                         thumb.thumbnail((100, 100))
                         
                         if self.callback_thumbnail:
-                            self.callback_thumbnail(filepath, thumb)
+                            self.callback_thumbnail(filepath, thumb, width, height, ai_tag)
                         
                         downloaded_count += 1
                             
                     if self.callback_progress:
-                        self.callback_progress(i + 1, total, f"Descargando: {os.path.basename(img_url)[:30]}...")
+                        self.callback_progress(i + 1, total, f"Analizando: {os.path.basename(img_url)[:20]}... ({downloaded_count} listas)")
 
                 except Exception as e:
                     print(f"Error downloading {img_url}: {e}")
