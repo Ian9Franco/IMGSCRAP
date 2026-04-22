@@ -53,24 +53,45 @@ def _find_price(soup, text_fallback=""):
     return "Consultar"
 
 
-def _find_location(soup, og_title="", og_desc=""):
-    """Extrae la ubicación del título OG o del DOM."""
-    # Selectores específicos
-    for selector in [
-        "[class*='location']", "[class*='ubicacion']", "[class*='barrio']",
-        "[class*='address']", "[itemprop='addressLocality']"
-    ]:
-        el = soup.select_one(selector)
-        if el:
-            return el.get_text(strip=True)
+def _parse_address_and_location(og_title: str, soup) -> tuple[str, str]:
+    """
+    Separa la dirección (calle + número) de la ubicación (barrio/zona).
 
-    # Desde el título OG: "Casa en Venta en Ramos Mejia Sur - Marmol 1426"
-    # Patrón: "en [Ubicación]"
-    match = re.search(r'\ben\s+([A-ZÁÉÍÓÚÑ][^\-\|]+)', og_title)
-    if match:
-        return match.group(1).strip()
+    Ej: "Casa en Venta en Ramos Mejia Sur - Marmol 1426"
+      → address="Marmol 1426", location="Ramos Mejia Sur"
+    """
+    address = ""
+    location = ""
 
-    return ""
+    if og_title:
+        # Patrón Tokko Broker: "Tipo en Operacion en [Zona] - [Calle Numero]"
+        match = re.match(r'.+?\sen\s(.+?)\s-\s(.+)$', og_title)
+        if match:
+            location = match.group(1).strip()
+            address  = match.group(2).strip()
+        else:
+            # Fallback: la parte después del último guion es la dirección
+            parts = og_title.rsplit("-", 1)
+            if len(parts) == 2:
+                address = parts[1].strip()
+
+    # Selectores DOM para casos donde no hay og:title limpio
+    if not address:
+        for sel in ["[itemprop='streetAddress']", "[class*='address']", "[class*='direccion']"]:
+            el = soup.select_one(sel)
+            if el:
+                address = el.get_text(strip=True)
+                break
+
+    if not location:
+        for sel in ["[itemprop='addressLocality']", "[class*='barrio']", "[class*='location']"]:
+            el = soup.select_one(sel)
+            if el:
+                location = el.get_text(strip=True)
+                break
+
+    return address, location
+
 
 
 def _find_features_tokko(soup):
@@ -135,22 +156,19 @@ def extract_property_data(url: str, nicho: str = "inmobiliaria") -> dict:
         soup = BeautifulSoup(resp.text, "html.parser")
         full_text = soup.get_text(" ")
 
-        # 1. OG Tags (funcionan en Tokko Broker, MercadoLibre Inmuebles, etc.)
+        # 2. Título + Address + Location
         og_title = _og_meta(soup, "og:title")
         og_desc  = _og_meta(soup, "og:description")
 
-        # 2. Título limpio
         title = og_title
-        # Limpiar sufijos comunes: "- Inmobiliaria X" / "| Portal X"
         title = re.sub(r'\s*[\-\|]\s*[A-Z][a-zA-Z ]{3,}$', '', title).strip()
+
+        address, location = _parse_address_and_location(og_title, soup)
 
         # 3. Precio
         price = _find_price(soup, full_text)
 
-        # 4. Ubicación
-        location = _find_location(soup, og_title, og_desc)
-
-        # 5. Características — detectar portal
+        # 4. Features — detectar portal
         domain = urlparse(url).netloc.lower()
         if any(p in domain for p in ["tokko", "urbanoprop", "remax", "century21"]):
             features = _find_features_tokko(soup)
@@ -170,15 +188,16 @@ def extract_property_data(url: str, nicho: str = "inmobiliaria") -> dict:
         # 6. Descripción: OG description como base
         description = og_desc
 
-        extracted = bool(title or price != "Consultar" or location or features)
+        extracted = bool(address or title or price != "Consultar" or location or features)
 
         return {
-            "title": title,
-            "price": price,
-            "location": location,
-            "features": features,
-            "description": description,
-            "extracted": extracted
+            "title":       title,
+            "address":     address,
+            "price":       price,
+            "location":    location,
+            "features":    features,
+            "description": og_desc,
+            "extracted":   extracted
         }
 
     except Exception as e:

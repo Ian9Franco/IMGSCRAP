@@ -8,6 +8,7 @@ import threading
 import shutil
 import subprocess
 import json
+import re
 from scraper import ImageScraper
 from image_classifier import load_model, is_model_ready, classify_image, NICHO_TAGS
 from copy_generator import generate_copy
@@ -45,6 +46,52 @@ def set_config(new_dir: str, api_key: str = ""):
         json.dump(data, f)
     os.makedirs(new_dir, exist_ok=True)
     return data
+
+def suggest_folder_name(address: str, base_dir: str) -> str:
+    """
+    Genera un nombre de carpeta con serial y versión.
+    Formato: 01-Constitucion 1461-V1
+
+    - Si ya hay carpetas, toma el número siguiente al máximo existente.
+    - Si ya existe una carpeta con la misma dirección, reutiliza su serial
+      y aumenta la versión (V1 → V2 → V3...).
+    """
+    # Sanitizar la dirección: eliminar caracteres raros pero mantener espacios y tildes
+    clean = re.sub(r'[<>:"/\\|?*]', '', address).strip()
+    if not clean:
+        clean = "Propiedad"
+
+    existing = [
+        f for f in os.listdir(base_dir)
+        if os.path.isdir(os.path.join(base_dir, f))
+    ] if os.path.exists(base_dir) else []
+
+    # Parseo los seriales existentes: espero el formato "NN-...-VN"
+    all_serials = []
+    same_address_entries = []  # (serial_num, version_num)
+
+    for folder in existing:
+        m = re.match(r'^(\d+)-(.+)-(V\d+)$', folder)
+        if m:
+            sn = int(m.group(1))
+            addr = m.group(2).strip()
+            vn = int(m.group(3)[1:])
+            all_serials.append(sn)
+            if addr.lower() == clean.lower():
+                same_address_entries.append((sn, vn))
+
+    if same_address_entries:
+        # Misma dirección: reutilizar el serial y subir la versión
+        orig_serial = same_address_entries[0][0]
+        max_version = max(vn for _, vn in same_address_entries)
+        serial = str(orig_serial).zfill(2)
+        version = f"V{max_version + 1}"
+    else:
+        next_serial = (max(all_serials) + 1) if all_serials else 1
+        serial = str(next_serial).zfill(2)
+        version = "V1"
+
+    return f"{serial}-{clean}-{version}"
 
 os.makedirs(get_config()["base_dir"], exist_ok=True)  # Me aseguro de que mi carpeta base siempre exista
 
@@ -136,6 +183,13 @@ def api_get_config():
 def api_set_config(req: ConfigRequest):
     new_config = set_config(req.base_dir, req.openai_api_key)
     return {"status": "success", "config": new_config}
+
+@app.get("/api/folder/suggest")
+def api_suggest_folder(address: str):
+    """Sugiere un nombre de carpeta con serial y versión basado en la dirección."""
+    base_dir = get_config()["base_dir"]
+    name = suggest_folder_name(address, base_dir)
+    return {"folder": name}
 
 @app.get("/api/ai/status")
 def api_ai_status():
