@@ -118,6 +118,16 @@ class CopyRequest(BaseModel):
     data: dict
     property_folder: str
 
+class CopyEditRequest(BaseModel):
+    current_copy: str
+    prompt: str
+
+class SaveCopyRequest(BaseModel):
+    copy: str
+    property_folder: str
+    title: str = "Propiedad"
+    features: list[str] = []
+
 class ExtractRequest(BaseModel):
     url: str
     nicho: str = "inmobiliaria"
@@ -274,6 +284,39 @@ def api_generate_copy(req: CopyRequest):
                 print(f"[Copy] Error guardando property_data.json: {e}")
                 
     return {"copy": copy_text}
+
+@app.post("/api/copy/edit")
+def api_edit_copy(req: CopyEditRequest):
+    config = get_config()
+    api_key = config.get("openai_api_key", "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Falta configurar Gemini API Key")
+        
+    import google.generativeai as genai
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    
+    sys_prompt = f"Sos un redactor experto. Editá este copy inmobiliario cumpliendo ESTRICTAMENTE con este pedido: '{req.prompt}'. DEVOLVÉ ÚNICAMENTE EL TEXTO MODIFICADO en Markdown, manteniendo el formato limpio original. No des explicaciones."
+    
+    try:
+        response = model.generate_content([sys_prompt, f"TEXTO ORIGINAL:\n{req.current_copy}"])
+        return {"copy": response.text.strip()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/copy/save-docx")
+def api_save_docx(req: SaveCopyRequest):
+    config = get_config()
+    folder_path = os.path.join(config["base_dir"], req.property_folder)
+    if os.path.exists(folder_path):
+        generate_property_doc(
+            folder_path,
+            req.title,
+            req.copy,
+            req.features
+        )
+        return {"status": "success"}
+    raise HTTPException(status_code=404, detail="Carpeta no encontrada")
 
 @app.post("/api/property/extract")
 def api_extract_property(req: ExtractRequest):
