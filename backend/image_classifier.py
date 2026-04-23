@@ -36,9 +36,9 @@ def load_model():
                 print("[CLIP] Cargando modelo clip-ViT-B-32...")
                 _model = SentenceTransformer("clip-ViT-B-32")
                 _model_ready = True
-                print("[CLIP] ✅ Modelo listo.")
+                print("[CLIP] Modelo listo.")
     except Exception as e:
-        print(f"[CLIP] ⚠️ Error al cargar modelo: {e}")
+        print(f"[CLIP] Error al cargar modelo: {e}")
 
 def is_model_ready() -> bool:
     return _model_ready

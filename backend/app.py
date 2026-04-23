@@ -15,6 +15,7 @@ from copy_generator import generate_copy
 from document_generator import generate_property_doc
 from property_extractor import extract_property_data
 from config_manager import AppConfig, get_config_obj, save_config_obj
+from agent_logger import agent_log
 
 def get_config():
     conf = get_config_obj()
@@ -130,6 +131,10 @@ class SaveCopyRequest(BaseModel):
 
 class ExtractRequest(BaseModel):
     url: str
+    nicho: str = "inmobiliaria"
+
+class ClassifyExistingRequest(BaseModel):
+    image_paths: list[str]
     nicho: str = "inmobiliaria"
 
 def start_scrape_job(job_id: str, url: str, dest_folder: str, only_large: bool, use_ai: bool, nicho: str):
@@ -255,9 +260,59 @@ def api_rename_image(req: RenameRequest):
         
     try:
         os.rename(req.old_path, new_path)
+        print(f"[Rename] OK: {req.old_path} -> {new_path}")
         return {"old_path": req.old_path, "new_path": new_path, "new_name": new_name}
     except Exception as e:
+        print(f"[Rename] Error: {e}")
         raise HTTPException(status_code=500, detail=f"Error al renombrar: {str(e)}")
+
+def perform_rename(old_path: str, tag: str) -> str:
+    """Helper interno para renombrar sin una request HTTP."""
+    if not os.path.exists(old_path): return old_path
+    dir_name = os.path.dirname(old_path)
+    ext = os.path.splitext(old_path)[1]
+    base_new_name = tag.lower().replace(" ", "_")
+    new_name = f"{base_new_name}{ext}"
+    new_path = os.path.join(dir_name, new_name)
+    counter = 1
+    while os.path.exists(new_path):
+        new_name = f"{base_new_name}_{counter}{ext}"
+        new_path = os.path.join(dir_name, new_name)
+        counter += 1
+    os.rename(old_path, new_path)
+    return new_path
+
+@app.post("/api/images/classify-existing")
+def api_classify_existing(req: ClassifyExistingRequest):
+    """Clasifica y RENOMBRA una lista de imágenes ya existentes."""
+    if not is_model_ready():
+        raise HTTPException(status_code=400, detail="El modelo CLIP aún se está cargando")
+    
+    results = []
+    print(f"[CLIP] Clasificando {len(req.image_paths)} imágenes existentes...")
+    for path in req.image_paths:
+        if os.path.exists(path):
+            try:
+                from PIL import Image as PILImage
+                with PILImage.open(path) as img_pil:
+                    prediction = classify_image(img_pil, req.nicho)
+                    tag = prediction["top_tag"]
+                    
+                    if tag:
+                        # Renombramos directamente en el backend
+                        new_path = perform_rename(path, tag)
+                        results.append({"path": path, "new_path": new_path, "ai_tag": tag})
+                        agent_log.log("CLIP", f"Clasificado: {os.path.basename(path)} -> {tag}")
+                    else:
+                        results.append({"path": path, "new_path": path, "ai_tag": None})
+            except Exception as e:
+                agent_log.log("CLIP", f"Error procesando {os.path.basename(path)}: {e}", "ERROR")
+                results.append({"path": path, "new_path": path, "ai_tag": None, "error": str(e)})
+        else:
+            results.append({"path": path, "new_path": path, "ai_tag": None, "error": "No encontrado"})
+    
+    agent_log.log("CLIP", f"Clasificación finalizada. {len(results)} procesadas.")
+    return {"results": results}
 
 @app.post("/api/copy/generate")
 def api_generate_copy(req: CopyRequest):
@@ -293,15 +348,36 @@ def api_edit_copy(req: CopyEditRequest):
         raise HTTPException(status_code=400, detail="Falta configurar Gemini API Key")
         
     import google.generativeai as genai
+    import os
+    os.environ["GOOGLE_API_USE_MTLS_ENDPOINT"] = "never"
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    
+    # Configuramos el 'Brain' con una personalidad definida
+    model = genai.GenerativeModel(
+        model_name="gemini-flash-latest",
+        system_instruction="Eres el motor 'Brain' de AGENT.IO. Tu función es editar copys inmobiliarios. "
+                           "Eres experto en marketing de Real Estate. Si el usuario pide cambiar valores "
+                           "numéricos (como precios), hacelo manteniendo el formato Markdown original. "
+                           "Sé conciso y devolvé únicamente el texto editado."
+    )
     
     sys_prompt = f"Sos un redactor experto. Editá este copy inmobiliario cumpliendo ESTRICTAMENTE con este pedido: '{req.prompt}'. DEVOLVÉ ÚNICAMENTE EL TEXTO MODIFICADO en Markdown, manteniendo el formato limpio original. No des explicaciones."
     
     try:
-        response = model.generate_content([sys_prompt, f"TEXTO ORIGINAL:\n{req.current_copy}"])
+        sys_inst = model._system_instruction.parts[0].text if hasattr(model, '_system_instruction') else "Experto Real Estate"
+        
+        prompt = f"Este es el copy actual:\n{req.current_copy}\n\nInstrucción del usuario: {req.prompt}"
+        
+        agent_log.log("GEMINI", f"Enviando solicitud a la IA...")
+        agent_log.log("GEMINI-PROMPT", prompt)
+        
+        response = model.generate_content(prompt)
+        
+        agent_log.log("GEMINI-RESPONSE", response.text.strip())
+        
         return {"copy": response.text.strip()}
     except Exception as e:
+        agent_log.log("GEMINI", f"Error en chat: {e}", "ERROR")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/copy/save-docx")
@@ -426,20 +502,52 @@ def api_get_history():
 
 @app.get("/api/images/history/folder")
 def api_get_history_folder(name: str):
-    folder_path = os.path.join(get_config()["base_dir"], name)
-    if not os.path.exists(folder_path):
-        raise HTTPException(status_code=404, detail=f"Carpeta no encontrada: {folder_path}")
-    images = sorted([
-        os.path.join(folder_path, item)
-        for item in os.listdir(folder_path)
+    base_folder_path = os.path.join(get_config()["base_dir"], name)
+    if not os.path.exists(base_folder_path):
+        raise HTTPException(status_code=404, detail=f"Carpeta no encontrada: {base_folder_path}")
+    
+    # Las imágenes ahora se guardan en la subcarpeta recursos/fotos
+    fotos_path = os.path.join(base_folder_path, "recursos", "fotos")
+    
+    # Si la subcarpeta no existe, intentamos buscar en la raíz por compatibilidad con sesiones muy viejas
+    search_path = fotos_path if os.path.exists(fotos_path) else base_folder_path
+
+    raw_image_paths = sorted([
+        os.path.join(search_path, item)
+        for item in os.listdir(search_path)
         if item.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))
     ])
+
+    from PIL import Image as PILImage
+    images_data = []
+    for p in raw_image_paths:
+        try:
+            with PILImage.open(p) as img:
+                w, h = img.size
+                # Intentamos extraer el tag del nombre del archivo si ya fue clasificada
+                # Formato esperado: tag_1.jpg o fachada.jpg
+                filename = os.path.basename(p)
+                tag = None
+                if "_" in filename and not filename.startswith("image_"):
+                    tag = filename.split("_")[0].capitalize()
+                elif not filename.startswith("image_"):
+                    tag = os.path.splitext(filename)[0].capitalize()
+
+                images_data.append({
+                    "path": p,
+                    "width": w,
+                    "height": h,
+                    "ai_tag": tag
+                })
+        except:
+            images_data.append({"path": p, "width": 0, "height": 0, "ai_tag": None})
+
     # Informo si existe un copy guardado para que el frontend muestre el badge
     has_copy = (
-        os.path.exists(os.path.join(folder_path, "copy_propiedad.txt")) or
-        os.path.exists(os.path.join(folder_path, "copy_propiedad.docx"))
+        os.path.exists(os.path.join(base_folder_path, "copy_propiedad.txt")) or
+        os.path.exists(os.path.join(base_folder_path, "copy_propiedad.docx"))
     )
-    return {"images": images, "folder": folder_path, "has_copy": has_copy}
+    return {"images": images_data, "folder": base_folder_path, "has_copy": has_copy}
 
 
 @app.get("/api/copy/load")
@@ -494,6 +602,11 @@ def api_load_copy(folder_name: str):
         return {"copy": copy_found_text, "found": True, "source": "txt/docx", "raw_data": raw_data}
     
     return {"copy": "", "found": False, "source": None, "raw_data": raw_data}
+
+@app.get("/api/logs")
+def api_get_logs(limit: int = 100):
+    from agent_logger import agent_log
+    return {"logs": agent_log.get_logs(limit)}
 
 if __name__ == "__main__":
     import uvicorn

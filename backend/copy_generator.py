@@ -163,7 +163,7 @@ def generate_copy(nicho: str, data: dict, api_key: str = "") -> str:
 
     title    = data.get("title", "Propiedad")
     address  = data.get("address", "A consultar")
-    location = data.get("location", "Zona Oeste")
+    location = data.get("location", "Zona Oeste").replace("Venta en ", "").replace("Alquiler en ", "").strip()
     price    = data.get("price", "Consultar")
     features = data.get("features", [])
     desc     = data.get("description", "")
@@ -172,9 +172,11 @@ def generate_copy(nicho: str, data: dict, api_key: str = "") -> str:
     features_str = "\n".join(f"- {f}" for f in features) if isinstance(features, list) else features
 
     import google.generativeai as genai
+    import os
     try:
+        os.environ["GOOGLE_API_USE_MTLS_ENDPOINT"] = "never"
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
 
         if nicho == "inmobiliaria":
             prompt = f"""
@@ -210,8 +212,15 @@ def generate_copy(nicho: str, data: dict, api_key: str = "") -> str:
             Características: {features_str}
             Escribí en español rioplatense. Solo el copy, sin comentarios."""
 
+        from agent_logger import agent_log
+        agent_log.log("GEMINI", "Generando nuevo copy...")
+        agent_log.log("GEMINI-PROMPT", prompt)
+
         response = model.generate_content(prompt)
+        
+        agent_log.log("GEMINI-RESPONSE", response.text.strip())
         return response.text.strip()
     except Exception as e:
-        print(f"Error con Gemini: {e}")
+        from agent_logger import agent_log
+        agent_log.log("GEMINI", f"Error con Gemini: {e}", "ERROR")
         return generate_copy_local(nicho, data)

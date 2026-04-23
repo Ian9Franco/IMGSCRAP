@@ -1,84 +1,109 @@
-# Guía de Desarrollo - IMG Scraper Pro
+# Guía de Desarrollo - AGENT.IO
 
 Este documento detalla el funcionamiento interno de la aplicación, su arquitectura y los componentes técnicos que la integran.
 
 ## Descripción General
-**IMG Scraper Pro** es una herramienta de escritorio diseñada para automatizar la extracción, organización y exportación de imágenes desde sitios web. Está construida con una arquitectura desacoplada: un **backend** potente en Python y un **frontend** moderno en React/Next.js, todo empaquetado como una aplicación nativa mediante `pywebview`.
+**AGENT.IO** es una plataforma de automatización de contenidos inmobiliarios y comerciales. Combina la extracción masiva de imágenes con Inteligencia Artificial para clasificar fotos, extraer metadatos de propiedades y generar copys publicitarios optimizados.
 
 ---
 
-## Cómo funciona (Arquitectura)
-La aplicación utiliza un modelo cliente-servidor local:
-1.  **Lanzador (main.py):** Orquestador inicial que levanta los servicios de backend y frontend en hilos separados y abre la ventana principal.
-2.  **Comunicación:** El frontend se comunica con el backend mediante una API REST (FastAPI).
-3.  **Procesamiento Asíncrono:** La descarga de imágenes se realiza en hilos (threads) secundarios para no bloquear la interfaz de usuario.
-4.  **Persistencia:** La configuración (como la carpeta base) se guarda en un archivo `config.json` local.
+## Arquitectura del Sistema
+La aplicación utiliza un modelo cliente-servidor local desacoplado:
+1.  **Lanzador (main.py):** Orquestador que levanta el backend (FastAPI) y el frontend (Next.js) en hilos separados.
+2.  **Backend (Python):** Gestiona el procesamiento pesado (scraping, IA, manejo de archivos).
+3.  **Frontend (React/Next.js):** Interfaz de usuario moderna con dos personalidades dinámicas: **Manual** y **Brain**.
+4.  **IA Local (CLIP):** Modelo de visión artificial cargado en memoria para clasificar imágenes sin depender de la nube.
+5.  **IA en la Nube (Gemini):** Integración con Google Generative AI para redacción creativa y edición de texto.
 
 ---
 
 ## Componentes del Backend (Python)
 
-### 1. `main.py` (Entry Point)
-Es el punto de entrada de la aplicación. Sus responsabilidades incluyen:
-- Iniciar el servidor de **FastAPI** (`app.py`).
-- Iniciar el servidor de desarrollo de **Next.js** (o servir la build).
-- Crear y gestionar la ventana de escritorio usando `pywebview`.
-- Asegurar el cierre limpio de todos los procesos secundarios al salir.
+### 1. `app.py` (El Orquestador API)
+Es el núcleo de comunicación. Define todos los endpoints REST que consume el frontend.
+*   **Gestión de Jobs:** Maneja el estado de las tareas de scraping mediante un diccionario en memoria (`jobs`).
+*   **Nuevos Endpoints IA:** Incluye `/api/images/classify-existing` para procesamiento retroactivo y `/api/copy/edit` para edición interactiva con Gemini.
+*   **Browser de Carpetas:** Implementa un bridge con PowerShell para abrir selectores de carpetas nativos de Windows.
 
-### 2. `backend/app.py` (API REST & Orquestador)
-El corazón lógico del sistema. Utiliza **FastAPI** para exponer endpoints que el frontend consume:
-- **Gestión de Scrapeo:** Inicia, detiene y consulta el estado de las tareas de extracción.
-- **Explorador de Archivos:** Implementa un selector de carpetas nativo mediante scripts de PowerShell.
-- **Gestión de Imágenes:** Endpoints para renombrar archivos (evitando duplicados) y servirlos localmente.
-- **Exportación:** Lógica para mover archivos procesados a carpetas de destino final.
+### 2. `scraper.py` (Extracción de Imágenes)
+Encargado de la "fuerza bruta" del scraping.
+*   **Identificación:** Busca imágenes en etiquetas `<img>`, `<a>` y atributos `srcset` o `data-src`.
+*   **Optimización:** Convierte todo a `.jpg` (RGB) y genera miniaturas para la UI.
+*   **Integración CLIP:** Si el modo IA está activo, llama a `image_classifier.py` durante la descarga para descartar basura y asignar etiquetas.
 
-### 3. `backend/scraper.py` (Lógica de Extracción)
-Contiene la clase `ImageScraper`, encargada de:
-- Analizar el HTML de las URLs usando **BeautifulSoup**.
-- Identificar imágenes de alta resolución (buscando en atributos como `srcset`, `data-src`, etc.).
-- Filtrar contenido irrelevante (SVG, iconos, logos).
-- Descargar y convertir imágenes a formato JPEG usando **Pillow (PIL)** para optimizar espacio y compatibilidad.
-- Generar miniaturas (thumbnails) en tiempo real para la previsualización.
+### 3. `image_classifier.py` (Visión Artificial)
+Gestiona el modelo **CLIP (Contrastive Language-Image Pretraining)**.
+*   **Carga Lazy:** El modelo (~350MB) se descarga la primera vez y se mantiene en memoria.
+*   **Clasificación por Nicho:** Utiliza similitud coseno para comparar imágenes con etiquetas de texto (ej: "Fachada", "Cocina", "Baño").
+*   **Filtrado de Relevancia:** Descarta automáticamente logos, banners y capturas de pantalla si su "score" de irrelevancia es alto.
 
-### 4. `backend/document_generator.py` (Generador de Documentos)
-Un componente especializado que utiliza `python-docx` para:
-- Crear documentos de Microsoft Word (`.docx`).
-- Formatear automáticamente títulos, listas de características y descripciones extraídas.
-- Guardar estos reportes junto a las imágenes descargadas.
+### 4. `copy_generator.py` (Redacción con IA)
+El cerebro creativo de la aplicación.
+*   **Modo Gemini:** Utiliza el modelo `gemini-1.5-flash` para generar publicaciones con formato Markdown, hashtags y emojis.
+*   **Modo Offline:** Si no hay API Key configurada, utiliza un motor de plantillas local (`local_templates`) para generar un copy básico pero funcional.
+
+### 5. `property_extractor.py` (Extracción de Datos)
+Scraper especializado en capturar la información técnica de la propiedad.
+*   **Scraping Selectivo:** Extrae Título, Precio, Ubicación y Características (ambientes, m2, etc.) directamente del HTML de la URL.
+*   **Normalización:** Limpia y formatea los datos para que el usuario no tenga que escribirlos manualmente en el Generador de Copy.
+
+### 6. `document_generator.py` (Manejo de Documentos)
+*   **Word (.docx):** Crea documentos profesionales con formato enriquecido para exportación.
+*   **Texto (.txt):** Guarda una versión plana del copy para permitir la previsualización y edición rápida en la aplicación.
+
+### 7. `config_manager.py` (Persistencia)
+Gestiona el archivo `config.json`.
+*   Almacena la ruta del directorio base y la API Key de Gemini de forma persistente.
 
 ---
 
 ## Componentes del Frontend (Next.js)
 
-El frontend es una Single Page Application (SPA) moderna enfocada en la experiencia de usuario (UX):
+### Modos de Interfaz
+AGENT.IO cambia su comportamiento y estética según el modo seleccionado:
 
--   **Tecnologías:** Next.js, TypeScript y Tailwind CSS.
--   **Interfaz:** Diseño premium, minimalista y monocromático.
--   **Dashboard:** Un panel central que muestra el progreso de descarga con barras de estado y miniaturas dinámicas.
--   **Sidebar:** Navegación persistente entre los modos de "Extracción", "Historial" y "Configuración".
--   **Configuración Dinámica:** Permite al usuario cambiar la ruta base de almacenamiento global de la app sin reiniciar.
+1.  **Manual Mode (Gris/Naranja):** Enfocado en la extracción pura y la gestión de sesiones históricas.
+2.  **Brain Mode (Azul Eléctrico):** Activa las funciones de IA. Cambia la paleta de colores y habilita el Filtro IA y el Generador de Copy.
 
----
-
-## Flujo de Trabajo Típico
-1.  El usuario ingresa una URL y selecciona una carpeta.
-2.  `app.py` recibe la petición e instancia un `ImageScraper` en un hilo nuevo.
-3.  `scraper.py` descarga las imágenes, las convierte y las guarda.
-4.  El frontend consulta `/api/scrape/status` periódicamente para actualizar la UI.
-6.  **Exportación:** Al mover a la carpeta final, el sistema calcula automáticamente el siguiente número de serie para mantener el orden.
+### Hooks Clave
+*   `useScrapingJob.ts`: Controla el ciclo de vida de la extracción y ahora gestiona la **clasificación retroactiva** automática.
+*   `useCopyGenerator.ts`: Maneja el estado de los metadatos de la propiedad y la comunicación con el editor de Gemini.
 
 ---
 
 ## Estructura de Sesión y Exportación
 
-### Carpeta de Sesión (Local)
-Cada vez que se inicia un scrapeo, se crea una carpeta con la siguiente estructura:
-- `recursos/fotos/`: Contiene todas las imágenes descargadas y procesadas (.jpg).
-- `copy_propiedad.docx`: Documento Word con la información de la propiedad.
-- `copy_propiedad.txt`: Versión en texto plano del copy para carga rápida en la app.
+### Jerarquía de Carpetas
+Cada sesión de trabajo se organiza así:
+- `recursos/fotos/`: Imágenes descargadas, ya clasificadas y renombradas.
+- `property_data.json`: Datos técnicos crudos de la propiedad (permite regenerar copys).
+- `copy_propiedad.txt`: Copy actual para visualización.
+- `copy_propiedad.docx`: Archivo final listo para enviar al cliente.
 
-### Lógica de Exportación (Smart Numbering)
-Al exportar una sesión a una carpeta de destino final, la aplicación aplica una lógica de nomenclatura profesional:
-1. **Escaneo de Destino:** Analiza la carpeta destino en busca de carpetas que comiencen con números (ej: `15-...`, `16-...`).
-2. **Cálculo de Serial:** Determina el número más alto y le suma 1 (ej: `17`).
-3. **Renombrado Automático:** Mueve la sesión completa y la renombra siguiendo el patrón `NN-Direccion-V1`.
+### Lógica de Exportación (Smart Serial)
+Al hacer clic en **Exportar Sesión**, el backend:
+1.  Busca el número de serie más alto en la carpeta de destino elegida.
+2.  Calcula el siguiente serial (ej: de `10-` a `11-`).
+3.  Crea la nueva estructura de carpetas y mueve únicamente lo esencial (fotos y documento Word).
+
+---
+
+## Guía de Instalación para Desarrolladores
+
+1.  **Requisitos:** Python 3.10+, Node.js 18+.
+2.  **Backend:**
+    ```bash
+    pip install fastapi uvicorn beautifulsoup4 pillow sentence-transformers torch python-docx google-generativeai
+    ```
+3.  **Frontend:**
+    ```bash
+    cd frontend
+    npm install
+    ```
+4.  **Ejecución:**
+    ```bash
+    python main.py
+    ```
+
+---
+*Documentación actualizada al 23 de Abril de 2026 - AGENT.IO Core Team*
