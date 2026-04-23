@@ -1,127 +1,54 @@
-# IMG Scraper Pro — Roadmap
+# Roadmap — IMG Scraper Pro
 
-> **Visión:** "Extraé y generá contenido listo para redes en segundos."
-> No es un scraper con cositas. Es un procesador inteligente de contenido.
+## Módulo 1 – Base y Scraping (Completado)
+- [x] Estructura FastAPI + Next.js
+- [x] Scraper de imágenes con BeautifulSoup
+- [x] Descarga y guardado local
+- [x] Deduplicación básica por hash perceptual
 
----
+## Módulo 2 – Inteligencia y Persistencia (Completado)
+- [x] Integración de CLIP (ViT-B/32) para clasificación
+- [x] Auto-tagging por nicho (Inmobiliaria)
+- [x] Generación de documentos Word (.docx)
+- [x] Generación de Copy con GPT-4o-mini o Template Local
 
-## Filosofía del producto
+## Módulo 3 – Optimizaciones y UX (Completado)
 
-- El usuario quiere apretar un botón y tener imágenes listas. **Si todavía tiene que pensar, la app no terminó el trabajo.**
-- No vendas "scraper de imágenes". Vendé **"imágenes listas para usar"**. Es otra liga.
-- No uses 10 modelos. Usá 3 cosas bien hechas.
+### ✅ Optimizaciones de performance
+- [x] **Cache de embeddings de texto CLIP**: los labels se calculan una sola vez.
+- [x] **Procesamiento paralelo**: `ThreadPoolExecutor` para descargas.
+- [x] **Deduplicación global entre sesiones**: `dedup_index.json` evita duplicados en toda la carpeta base.
+- [x] **Estructura Organizada**: Las imágenes se guardan automáticamente en `recursos/fotos`.
 
----
+### ✅ Mejoras de UX
+- [x] **Exportación Inteligente**: Al mover una sesión a la carpeta destino, la app detecta el serial más alto (ej: 16) y renombra la carpeta al siguiente (ej: 17-Direccion-V1).
+- [x] **Toast notifications** con `sonner`.
+- [x] **Indicador visual de renombrado** (badge ✅).
+- [x] **Contador de imágenes por tag IA** en sidebar.
+- [x] **Copy se carga automáticamente** al recuperar una sesión.
+- [x] **Boton "Limpiar Todo"**: para resetear la vista y permitir nueva auto-extracción.
+- [x] **Vista Previa en Pantalla Completa**: click en imagen para ampliar (Lightbox).
+- [x] **Filtros por Tag IA**: barra superior para filtrar la grilla por categoría (Fachada, Cocina, etc.).
 
-## Módulo 1 — Scraping + Procesamiento de imágenes
+### ✅ Mejoras de código
+- [x] **Arquitectura modular**: `Sidebar`, `ImageGrid`, `CopyPanel` separados.
+- [x] **Custom hooks**: `useScrapingJob`, `useCopyGenerator`, `useConfig`.
+- [x] **Validación Pydantic**: `AppConfig` centralizado para manejar settings con tipos.
+- [x] **Variable de entorno `API_BASE`**: configurada en `.env.local`.
 
-### ✅ Fase 1 – De herramienta a usable *(completada)*
+## Módulo 4 – Multicho y Presets (Completado)
 
-- [x] Deduplicación automática por hash perceptual (ImageHash)
-- [x] Filtro por resolución mínima (300px por defecto)
-- [x] Selector "Solo imágenes grandes" (+600px)
-- [x] Preview ordenado por calidad (mayor resolución primero)
-- [x] Badge de dimensiones al hacer hover en cada foto
+### ✅ Nichos adicionales
+- [x] **Gastronomía**: clasificación IA específica y templates de copy (local/AI).
+- [x] **Ecommerce**: clasificación IA específica y templates de copy (local/AI).
 
-### ✅ Fase 2 – IA mínima viable *(completada)*
-
-- [x] Integrar SigLIP/CLIP vía `sentence-transformers` (modelo `clip-ViT-B-32`)
-- [x] Carga del modelo en background al arrancar el backend (sin bloquear el inicio)
-- [x] Clasificación binaria: **relevante vs basura** — descartar logos, banners, íconos
-- [x] Auto-tagging básico por nicho (inmobiliaria, gastronomía, ecommerce)
-- [x] El tag se muestra como badge en cada imagen de la grilla
-- [x] Selector de nicho en la sidebar
-- [x] Indicador de estado del modelo (CARGANDO... → LISTO)
-- [x] El filtrado IA es opt-in por checkbox (se puede usar sin IA)
-
-### 🟠 Fase 3 – Renombrado inteligente
-
-- [ ] Renombrar automáticamente usando tags de IA + contexto del sitio (title, H1)
-- [ ] De `img_9384.jpg` a `casa-cocina-1.jpg`
-
-### 🔴 Fase 4 – Modo vertical (escalado por nicho)
-
-Elegir **un solo nicho** primero:
-
-| Nicho | Tags clave |
-|---|---|
-| Inmobiliaria | fachada, cocina, baño, dormitorio, jardín |
-| Gastronomía | plato, detalle, ambiente, bebida |
-| Ecommerce | producto, detalle, lifestyle |
-
-### 🔥 Feature estrella — Modo Auto
-
-Un solo botón: **"Procesar automáticamente"**. Hace todo:
-1. Filtra basura
-2. Elimina duplicados
-3. Clasifica y tagea
-4. Renombra
-
-Sin preguntas.
+### ✅ Presets de Copy
+- [x] **Multi-formato**: presets para Instagram/Facebook, Web y LinkedIn.
+- [x] **Emojis automáticos**: adaptados según el nicho seleccionado.
 
 ---
 
-## Módulo 2 — Generador de Copy
-
-### ✅ Fase 1 – Integración básica *(completada)*
-
-- [x] Módulo nuevo "Generador de Copy" en el backend (`copy_generator.py`)
-- [x] Integración con OpenAI GPT-4o-mini
-- [x] Prompt estructurado (Hook, Descripción, Specs, CTA)
-- [x] Exportación automática a Word (.docx)
-- [x] Interfaz de usuario con visor de copy y botón de copiar
-
-**Estructura de prompt fija:**
-```
-Actuá como especialista en marketing {nicho}.
-Generá un copy para Instagram con:
-1. Hook inicial (1 línea)
-2. Descripción breve
-3. Lista de características
-4. Cierre con CTA
-5. Hashtags
-
-Datos: tipo={tipo}, ubicación={ubicacion}, precio={precio}, features={features}
-```
-
-**Flujo de usuario:**
-`Scrapeás → Extraés datos → "Generar copy" → Seleccionás nicho → Click → Magia`
-
-### 🟠 Fase 2 – Templates por nicho
-
-- [ ] Inmobiliaria
-- [ ] Gastronomía
-
-### 🔴 Fase 3 – Multi-copy y presets
-
-- [ ] Versión Instagram / Facebook / Web desde el mismo input
-- [ ] Presets guardados por usuario
-
-### 🔥 Feature diferenciador — Copy + imágenes alineadas
-
-- imagen 1 → fachada → el texto menciona la ubicación
-- imagen 2 → cocina → el texto menciona la cocina
-
-Posible con los tags generados por IA en Módulo 1.
-
----
-
-## Lo que NO hacer
-
-- ❌ Mezclar copy dentro del scraper
-- ❌ Dejar que el usuario escriba prompts
-- ❌ Captions largos tipo GPT para clasificar imágenes
-- ❌ LLM local para clasificación de imágenes
-- ❌ Clasificación hiper compleja
-- ❌ UI con 200 opciones
-
----
-
-## Transformación del producto
-
-| Antes | Después |
-|---|---|
-| Descargo imágenes | Proceso y clasifico imágenes automáticamente |
-| Renombro a mano | Renombrado automático con IA |
-| Escribo copy | Copy generado y listo para pegar |
-| Exporto a mano | DOCX armado automáticamente |
+## Próximos Pasos (Ideas Futuras)
+- [ ] **Drag & Drop de orden**: reordenar imágenes antes de exportar el Word.
+- [ ] **Editor de imagen básico**: crop/resize antes de guardar.
+- [ ] **Soporte para más sitios**: optimizar extractores para portales específicos (Argenprop, Zonaprop, PedidosYa, etc.).

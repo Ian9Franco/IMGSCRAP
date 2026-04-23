@@ -190,6 +190,13 @@ def extract_property_data(url: str, nicho: str = "inmobiliaria") -> dict:
 
         extracted = bool(address or title or price != "Consultar" or location or features)
 
+        # Detectar tipo de operación (Venta / Alquiler)
+        operation_type = "venta"
+        if "alquiler" in title.lower() or "alquiler" in og_desc.lower():
+            operation_type = "alquiler"
+        elif "venta" in title.lower() or "venta" in og_desc.lower():
+            operation_type = "venta"
+
         return {
             "title":       title,
             "address":     address,
@@ -197,6 +204,7 @@ def extract_property_data(url: str, nicho: str = "inmobiliaria") -> dict:
             "location":    location,
             "features":    features,
             "description": og_desc,
+            "operation_type": operation_type,
             "extracted":   extracted
         }
 

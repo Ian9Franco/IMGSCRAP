@@ -1,0 +1,23 @@
+# Configuración local sensible
+config.json
+dedup_index.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+.env*.local
+
+# OS
+.DS_Store
+Thumbs.db

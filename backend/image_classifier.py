@@ -22,6 +22,10 @@ _model = None
 _model_lock = threading.Lock()
 _model_ready = False
 
+# Cache de embeddings de texto: evita recalcular los labels del nicho en cada imagen
+# Las etiquetas son fijas en runtime, así que calculamos una sola vez y guardamos.
+_text_embeddings_cache: dict[str, object] = {}
+
 def load_model():
     """Carga el modelo CLIP en background al arrancar el backend."""
     global _model, _model_ready
@@ -78,8 +82,9 @@ NICHO_TAGS: dict[str, list[str]] = {
     ],
 }
 
-# Etiquetas de BASURA — se usan para clasificación binaria
-BASURA_LABELS = [
+# Etiquetas de CONTENIDO NO DESEADO (Irrelevante)
+# Se usan para descartar logos, capturas, banners, etc.
+IRRELEVANT_LABELS = [
     "logo de empresa",
     "banner publicitario horizontal",
     "ícono pequeño de interfaz",
@@ -90,8 +95,8 @@ BASURA_LABELS = [
 ]
 
 # Umbral de similitud: si la similitud con cualquier tag del nicho >= THRESHOLD, es relevante
-RELEVANCE_THRESHOLD = 0.22   # empírico, ajustar según resultados
-BASURA_THRESHOLD   = 0.28   # si supera esto en basura, descartamos directo
+RELEVANCE_THRESHOLD  = 0.22   # empírico, ajustar según resultados
+IRRELEVANT_THRESHOLD = 0.28   # si supera esto en irrelevante, descartamos directo
 
 
 # ─────────────────────────────────────────────
@@ -112,6 +117,16 @@ def _embed_texts(texts: list[str]):
         return None
     return model.encode(texts, convert_to_tensor=True)
 
+
+def _embed_texts_cached(texts: list[str]):
+    """Igual que _embed_texts pero con cache en memoria por clave de texto.
+    Como los labels del nicho y basura son constantes durante la sesión,
+    se calculan una sola vez y se reutilizan para todas las imágenes."""
+    key = "|".join(texts)
+    if key not in _text_embeddings_cache:
+        _text_embeddings_cache[key] = _embed_texts(texts)
+    return _text_embeddings_cache[key]
+
 def classify_image(img: Image.Image, nicho: str = "inmobiliaria") -> dict:
     """
     Clasifica una imagen PIL.
@@ -121,13 +136,13 @@ def classify_image(img: Image.Image, nicho: str = "inmobiliaria") -> dict:
         "is_relevant": bool,
         "top_tag": str | None,       # categoría más probable del nicho
         "top_score": float,
-        "is_garbage": bool,
-        "garbage_score": float,
+        "is_irrelevant": bool,
+        "irrelevant_score": float,
     }
     """
     if not _model_ready:
         return {"is_relevant": True, "top_tag": None, "top_score": 0.0,
-                "is_garbage": False, "garbage_score": 0.0}
+                "is_irrelevant": False, "irrelevant_score": 0.0}
 
     try:
         from torch.nn.functional import cosine_similarity
@@ -136,33 +151,34 @@ def classify_image(img: Image.Image, nicho: str = "inmobiliaria") -> dict:
         nicho_labels = NICHO_TAGS.get(nicho, NICHO_TAGS["inmobiliaria"])
 
         img_emb = _embed_image(img)
-        text_embs_nicho  = _embed_texts(nicho_labels)
-        text_embs_basura = _embed_texts(BASURA_LABELS)
+        # Usamos cache para los embeddings de texto — se computan una sola vez por sesión
+        text_embs_nicho      = _embed_texts_cached(nicho_labels)
+        text_embs_irrelevant = _embed_texts_cached(IRRELEVANT_LABELS)
 
-        # Similitud coseno imagen vs cada etiqueta del nicho
-        scores_nicho  = cosine_similarity(img_emb.unsqueeze(0), text_embs_nicho).squeeze(0)
-        scores_basura = cosine_similarity(img_emb.unsqueeze(0), text_embs_basura).squeeze(0)
+        # Similitud coseno imagen vs cada etiqueta
+        scores_nicho      = cosine_similarity(img_emb.unsqueeze(0), text_embs_nicho).squeeze(0)
+        scores_irrelevant = cosine_similarity(img_emb.unsqueeze(0), text_embs_irrelevant).squeeze(0)
 
-        top_nicho_idx   = int(scores_nicho.argmax())
-        top_nicho_score = float(scores_nicho[top_nicho_idx])
-        top_basura_score = float(scores_basura.max())
+        top_nicho_idx      = int(scores_nicho.argmax())
+        top_nicho_score    = float(scores_nicho[top_nicho_idx])
+        top_irrelevant_score = float(scores_irrelevant.max())
 
-        is_garbage  = top_basura_score >= BASURA_THRESHOLD
-        is_relevant = (not is_garbage) and (top_nicho_score >= RELEVANCE_THRESHOLD)
+        is_irrelevant = top_irrelevant_score >= IRRELEVANT_THRESHOLD
+        is_relevant   = (not is_irrelevant) and (top_nicho_score >= RELEVANCE_THRESHOLD)
 
         # Normalizar el label para usarlo como tag (solo la primera palabra descriptiva)
         raw_tag = nicho_labels[top_nicho_idx]
         short_tag = raw_tag.split()[0].capitalize()   # ej. "fachada"
 
         return {
-            "is_relevant":   is_relevant,
-            "top_tag":       short_tag if is_relevant else None,
-            "top_score":     round(top_nicho_score, 4),
-            "is_garbage":    is_garbage,
-            "garbage_score": round(top_basura_score, 4),
+            "is_relevant":      is_relevant,
+            "top_tag":          short_tag if is_relevant else None,
+            "top_score":        round(top_nicho_score, 4),
+            "is_irrelevant":    is_irrelevant,
+            "irrelevant_score": round(top_irrelevant_score, 4),
         }
 
     except Exception as e:
         print(f"[CLIP] Error clasificando imagen: {e}")
         return {"is_relevant": True, "top_tag": None, "top_score": 0.0,
-                "is_garbage": False, "garbage_score": 0.0}
+                "is_irrelevant": False, "irrelevant_score": 0.0}

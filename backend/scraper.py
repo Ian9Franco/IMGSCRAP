@@ -7,6 +7,7 @@ from io import BytesIO
 import threading
 import time
 import imagehash
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class ImageScraper:
     def __init__(self, callback_progress=None, callback_thumbnail=None, callback_finished=None, min_resolution=(300, 300), use_ai=False, nicho="inmobiliaria"):
@@ -21,6 +22,8 @@ class ImageScraper:
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
         }
+        self.dedup_file = None
+        self.global_hashes = set()
 
     def start_scraping(self, url, base_path, image_path):
         self.is_running = True
@@ -59,10 +62,39 @@ class ImageScraper:
                 
         return best_url
 
+    def _download_image(self, img_url: str):
+        """
+        Descarga una imagen y valida resolucín + hash.
+        Retorna (img, img_data, width, height) si es válida, o None si hay que descartarla.
+        Se ejecuta en un thread del pool — sin clasificación CLIP (no es thread-safe).
+        """
+        try:
+            img_resp = requests.get(img_url, headers=self.headers, timeout=10)
+            if img_resp.status_code != 200:
+                return None
+            img_data = img_resp.content
+            img = Image.open(BytesIO(img_data))
+            width, height = img.size
+            if width < self.min_resolution[0] or height < self.min_resolution[1]:
+                return None
+            return img, img_data, width, height
+        except Exception:
+            return None
+
     def _scrape_logic(self, url, base_path, image_path):
         try:
             if not os.path.exists(image_path):
                 os.makedirs(image_path)
+
+            # Cargar hashes globales para deduplicación entre sesiones
+            import json
+            self.dedup_file = os.path.join(base_path, "dedup_index.json")
+            if os.path.exists(self.dedup_file):
+                try:
+                    with open(self.dedup_file, "r") as f:
+                        self.global_hashes = set(json.load(f))
+                except:
+                    self.global_hashes = set()
 
             response = requests.get(url, headers=self.headers, timeout=15)
             response.raise_for_status()
@@ -70,95 +102,104 @@ class ImageScraper:
             
             img_tags = soup.find_all('img')
             total = len(img_tags)
-            
+
             if self.callback_progress:
                 self.callback_progress(0, total, "Analizando imágenes...")
 
+            # Recolecto todas las URLs válidas primero
+            candidate_urls = []
             seen_urls = set()
-            seen_hashes = set()
-            downloaded_count = 0
-
-            for i, tag in enumerate(img_tags):
-                if not self.is_running:
-                    break
-                
+            for tag in img_tags:
                 img_url = self._get_best_image_url(tag, url)
                 if not img_url:
                     continue
-                    
-                # Ignoro los vectores, logos e iconos chiquitos que no me sirven por nombre
                 lower_url = img_url.lower()
                 if lower_url.endswith('.svg') or 'logo' in lower_url or 'icon' in lower_url:
                     continue
-                    
                 if img_url in seen_urls:
                     continue
                 seen_urls.add(img_url)
+                candidate_urls.append(img_url)
 
-                try:
-                    # Descargo la imagen de internet
-                    img_resp = requests.get(img_url, headers=self.headers, timeout=10)
-                    if img_resp.status_code == 200:
-                        img_data = img_resp.content
-                        img = Image.open(BytesIO(img_data))
-                        
-                        # Filtro por resolución mínima
-                        width, height = img.size
-                        if width < self.min_resolution[0] or height < self.min_resolution[1]:
-                            # print(f"Imagen ignorada por tamaño: {width}x{height}")
-                            continue
+            seen_hashes = set()
+            downloaded_count = 0
 
-                        # Deduplicación perceptual (ImageHash)
-                        img_hash = str(imagehash.average_hash(img))
-                        if img_hash in seen_hashes:
-                            # print(f"Imagen duplicada (hash) ignorada: {img_url}")
-                            continue
-                        seen_hashes.add(img_hash)
+            # Descarga paralela: 4 workers para no saturar la red
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {
+                    executor.submit(self._download_image, img_url): img_url
+                    for img_url in candidate_urls
+                }
 
-                        # Clasificación IA opcional (CLIP)
-                        ai_tag = None
-                        if self.use_ai:
-                            try:
-                                from image_classifier import classify_image, is_model_ready
-                                if is_model_ready():
-                                    result = classify_image(img, self.nicho)
-                                    if result["is_garbage"]:
-                                        # print(f"Imagen descartada por IA (basura): {img_url}")
-                                        continue
-                                    ai_tag = result["top_tag"]
-                            except Exception as e:
-                                print(f"[CLIP] Error en clasificación: {e}")
+                processed = 0
+                for future in as_completed(futures):
+                    if not self.is_running:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
 
-                        # Nombre del archivo: usa el ai_tag si hay IA activa, sino nombre genérico
-                        if self.use_ai and ai_tag:
-                            tag_slug = ai_tag.lower().replace(" ", "_")
-                            count = self._tag_counters.get(tag_slug, 0) + 1
-                            self._tag_counters[tag_slug] = count
-                            filename = f"{tag_slug}_{count}.jpg"
-                        else:
-                            filename = f"image_{int(time.time() * 1000)}_{downloaded_count}.jpg"
-                        filepath = os.path.join(image_path, filename)
-                        
-                        # La guardo con buena calidad para no perder detalles
-                        if img.mode in ("RGBA", "P"):
-                            img = img.convert("RGB")
-                        
-                        img.save(filepath, "JPEG", quality=95)
-                        
-                        # Genero una miniatura chiquita para que la interfaz cargue más rápido
-                        thumb = img.copy()
-                        thumb.thumbnail((100, 100))
-                        
-                        if self.callback_thumbnail:
-                            self.callback_thumbnail(filepath, thumb, width, height, ai_tag)
-                        
-                        downloaded_count += 1
-                            
+                    processed += 1
+                    img_url = futures[future]
+                    result = future.result()
+
                     if self.callback_progress:
-                        self.callback_progress(i + 1, total, f"Analizando: {os.path.basename(img_url)[:20]}... ({downloaded_count} listas)")
+                        self.callback_progress(
+                            processed, len(candidate_urls),
+                            f"Descargando... ({downloaded_count} listas)"
+                        )
 
-                except Exception as e:
-                    print(f"Error downloading {img_url}: {e}")
+                    if result is None:
+                        continue
+
+                    img, img_data, width, height = result
+
+                    # Deduplicación perceptual (Global y Local)
+                    img_hash = str(imagehash.average_hash(img))
+                    if img_hash in seen_hashes or img_hash in self.global_hashes:
+                        continue
+                    seen_hashes.add(img_hash)
+                    self.global_hashes.add(img_hash)
+
+                    # Clasificación IA (en hilo principal — model.encode no es thread-safe)
+                    ai_tag = None
+                    if self.use_ai:
+                        try:
+                            from image_classifier import classify_image, is_model_ready
+                            if is_model_ready():
+                                clf_result = classify_image(img, self.nicho)
+                                if clf_result["is_irrelevant"]:
+                                    continue
+                                ai_tag = clf_result["top_tag"]
+                        except Exception as e:
+                            print(f"[CLIP] Error en clasificación: {e}")
+
+                    # Nombre del archivo
+                    if self.use_ai and ai_tag:
+                        tag_slug = ai_tag.lower().replace(" ", "_")
+                        count = self._tag_counters.get(tag_slug, 0) + 1
+                        self._tag_counters[tag_slug] = count
+                        filename = f"{tag_slug}_{count}.jpg"
+                    else:
+                        filename = f"image_{int(time.time() * 1000)}_{downloaded_count}.jpg"
+                    filepath = os.path.join(image_path, filename)
+
+                    # Guardo la imagen
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+                    img.save(filepath, "JPEG", quality=95)
+
+                    if self.callback_thumbnail:
+                        self.callback_thumbnail(filepath, img, width, height, ai_tag)
+
+                    downloaded_count += 1
+
+            # Guardar hashes actualizados
+            if self.dedup_file:
+                try:
+                    with open(self.dedup_file, "w") as f:
+                        import json
+                        json.dump(list(self.global_hashes), f)
+                except:
+                    pass
 
             if self.callback_finished:
                 self.callback_finished("Completado con éxito" if self.is_running else "Cancelado por el usuario")

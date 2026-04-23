@@ -14,38 +14,19 @@ from image_classifier import load_model, is_model_ready, classify_image, NICHO_T
 from copy_generator import generate_copy
 from document_generator import generate_property_doc
 from property_extractor import extract_property_data
-
-CONFIG_FILE = "config.json"
-DEFAULT_BASE_DIR = "D:\\Dev\\imgscrap"
+from config_manager import AppConfig, get_config_obj, save_config_obj
 
 def get_config():
-    if not os.path.exists(CONFIG_FILE):
-        return {"base_dir": DEFAULT_BASE_DIR, "openai_api_key": ""}
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            config = json.load(f)
-            return {
-                "base_dir": config.get("BASE_DIR", DEFAULT_BASE_DIR),
-                "openai_api_key": config.get("OPENAI_API_KEY", "")
-            }
-    except:
-        return {"base_dir": DEFAULT_BASE_DIR, "openai_api_key": ""}
+    conf = get_config_obj()
+    return {"base_dir": conf.base_dir, "openai_api_key": conf.openai_api_key}
 
 def set_config(new_dir: str, api_key: str = ""):
-    data = {}
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                data = json.load(f)
-        except:
-            pass
-    data["BASE_DIR"] = new_dir
+    conf = get_config_obj()
+    conf.base_dir = new_dir
     if api_key:
-        data["OPENAI_API_KEY"] = api_key
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(data, f)
-    os.makedirs(new_dir, exist_ok=True)
-    return data
+        conf.openai_api_key = api_key
+    save_config_obj(conf)
+    return conf.model_dump(by_alias=True)
 
 def suggest_folder_name(address: str, base_dir: str) -> str:
     """
@@ -152,8 +133,9 @@ def start_scrape_job(job_id: str, url: str, dest_folder: str, only_large: bool, 
         nicho=nicho,
     )
     jobs[job_id]["scraper"] = scraper
-    # Le paso la misma ruta a los dos campos para que no me arme subcarpetas innecesarias
-    scraper.start_scraping(url, dest_folder, dest_folder)
+    # Las imágenes van a una subcarpeta específica
+    image_path = os.path.join(dest_folder, "recursos", "fotos")
+    scraper.start_scraping(url, dest_folder, image_path)
 
 def update_job_progress(job_id: str, current: int, total: int, message: str):
     if job_id in jobs:
@@ -283,6 +265,14 @@ def api_generate_copy(req: CopyRequest):
                 copy_text,
                 req.data.get("features", [])
             )
+            # Guardamos los datos crudos para poder regenerar versiones
+            data_path = os.path.join(folder_path, "property_data.json")
+            try:
+                with open(data_path, "w", encoding="utf-8") as f:
+                    json.dump(req.data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                print(f"[Copy] Error guardando property_data.json: {e}")
+                
     return {"copy": copy_text}
 
 @app.post("/api/property/extract")
@@ -293,24 +283,64 @@ def api_extract_property(req: ExtractRequest):
 
 @app.post("/api/images/export")
 def api_export_images(req: ExportRequest):
-    source_folder = os.path.join(get_config()["base_dir"], req.property_name)
+    """
+    Copia la sesión a la carpeta destino, 
+    calculando el siguiente número de serie disponible.
+    Filtra solo lo esencial (fotos y word).
+    """
+    base_dir = get_config()["base_dir"]
+    source_folder = os.path.join(base_dir, req.property_name)
+    
     if not os.path.exists(source_folder):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Carpeta origen no encontrada: {source_folder}"
-        )
+        raise HTTPException(status_code=404, detail="Carpeta de origen no encontrada")
+
     try:
         os.makedirs(req.target_folder, exist_ok=True)
-        moved_count = 0
-        for item in os.listdir(source_folder):
-            s = os.path.join(source_folder, item)
-            d = os.path.join(req.target_folder, item)
-            if os.path.isfile(s):
-                shutil.move(s, d)
-                moved_count += 1
-        return {"status": "success", "moved": moved_count, "target": req.target_folder}
+        
+        # 1. Limpiar el nombre de la propiedad
+        clean_name = req.property_name
+        m_clean = re.match(r'^\d+-(.+)-V\d+$', req.property_name)
+        if m_clean:
+            clean_name = m_clean.group(1).strip()
+            
+        # 2. Buscar el máximo serial en el destino
+        existing = os.listdir(req.target_folder)
+        all_serials = []
+        for folder in existing:
+            m = re.match(r'^(\d+)-', folder)
+            if m:
+                all_serials.append(int(m.group(1)))
+        
+        next_serial = (max(all_serials) + 1) if all_serials else 1
+        serial_str = str(next_serial).zfill(2)
+        
+        # 3. Nuevo nombre final
+        final_name = f"{serial_str}-{clean_name}-V1"
+        target_path = os.path.join(req.target_folder, final_name)
+
+        # 4. Copia selectiva
+        os.makedirs(target_path, exist_ok=True)
+        
+        # Copiar fotos
+        src_photos = os.path.join(source_folder, "recursos", "fotos")
+        dst_photos = os.path.join(target_path, "recursos", "fotos")
+        if os.path.exists(src_photos):
+            shutil.copytree(src_photos, dst_photos)
+            
+        # Copiar Word
+        src_word = os.path.join(source_folder, "copy_propiedad.docx")
+        dst_word = os.path.join(target_path, "copy_propiedad.docx")
+        if os.path.exists(src_word):
+            shutil.copy2(src_word, dst_word)
+        
+        return {
+            "status": "success", 
+            "new_name": final_name, 
+            "target": target_path
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al exportar: {str(e)}")
+        print(f"[Export] Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al exportar sesión: {str(e)}")
 
 @app.get("/api/browse/folder")
 def api_browse_folder():
@@ -361,7 +391,66 @@ def api_get_history_folder(name: str):
         for item in os.listdir(folder_path)
         if item.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))
     ])
-    return {"images": images, "folder": folder_path}
+    # Informo si existe un copy guardado para que el frontend muestre el badge
+    has_copy = (
+        os.path.exists(os.path.join(folder_path, "copy_propiedad.txt")) or
+        os.path.exists(os.path.join(folder_path, "copy_propiedad.docx"))
+    )
+    return {"images": images, "folder": folder_path, "has_copy": has_copy}
+
+
+@app.get("/api/copy/load")
+def api_load_copy(folder_name: str):
+    """Carga el copy guardado en una carpeta (si existe).
+    Primero busca el .txt plano (generado a partir del refactor).
+    Si no existe, intenta extraer el texto del .docx (compatibilidad con sesiones antiguas).
+    """
+    folder_path = os.path.join(get_config()["base_dir"], folder_name)
+
+    copy_found_text = None
+
+    # 1. Archivo .txt (el más fácil)
+    txt_path = os.path.join(folder_path, "copy_propiedad.txt")
+    if os.path.exists(txt_path):
+        try:
+            with open(txt_path, "r", encoding="utf-8") as f:
+                copy_found_text = f.read().strip()
+        except Exception as e:
+            print(f"[Copy] Error leyendo .txt: {e}")
+
+    # 2. Fallback: extraer texto del .docx (sesiones anteriores al refactor)
+    docx_path = os.path.join(folder_path, "copy_propiedad.docx")
+    if os.path.exists(docx_path):
+        try:
+            from docx import Document as DocxDocument
+            doc = DocxDocument(docx_path)
+            # Busco el heading "Descripción" y extraigo el párrafo siguiente
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            # Si el último heading es "Descripción", tomo todo lo que viene después
+            try:
+                desc_idx = next(i for i, t in enumerate(paragraphs) if t.strip() == "Descripción")
+                copy_text = "\n".join(paragraphs[desc_idx + 1:])
+            except StopIteration:
+                # No hay sección Descripción — tomo todos los párrafos como fallback
+                copy_text = "\n".join(paragraphs)
+            copy_found_text = copy_text.strip()
+        except Exception as e:
+            print(f"[Copy] Error extrayendo texto del .docx: {e}")
+
+    # 3. Intentamos cargar la info original de la propiedad para regenerar copys
+    raw_data = None
+    data_path = os.path.join(folder_path, "property_data.json")
+    if os.path.exists(data_path):
+        try:
+            with open(data_path, "r", encoding="utf-8") as f:
+                raw_data = json.load(f)
+        except Exception as e:
+            print(f"[Copy] Error cargando property_data.json: {e}")
+
+    if copy_found_text:
+        return {"copy": copy_found_text, "found": True, "source": "txt/docx", "raw_data": raw_data}
+    
+    return {"copy": "", "found": False, "source": None, "raw_data": raw_data}
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,57 +1,51 @@
 """
 copy_generator.py — Genera textos publicitarios para redes sociales.
 
-Modo 1 (con API Key): Llama a OpenAI GPT-4o-mini con prompt estructurado.
-Modo 2 (sin API Key): Template engine local — genera copy de calidad sin IA externa.
-                      Funciona offline, instantáneo, 0 dependencias adicionales.
-
-Estructura del copy (basada en ejemplo de Urbano Propiedades):
-  📍 Dirección – Barrio
-  [Descripción]
-  ✨ Características Principales:
-      • Distribución: ...
-      • Dormitorios y Baños: ...
-      • Servicios e Instalaciones: ...
-  🔍 Ficha Técnica: ...
-  💰 Precio: ...
-  📲 Contacto
+📌 GUÍA PARA OPTIMIZACIÓN MANUAL:
+---------------------------------
+Si querés cambiar cómo se ven los textos, buscá estas secciones:
+1. HASHTAGS: Modificá los tags por nicho y tipo de operación.
+2. OP_EMOJIS: Cambiá el título/emoji principal para Ventas y Alquileres.
+3. generate_copy_local: Aquí podés reordenar las secciones (Encabezado, Descripción, etc.)
 """
 
 import re
 import requests
 
-# ─── Clasificadores de features ───────────────────────────────────────────────
-
-# Features que van a la Ficha Técnica (datos numéricos / técnicos)
+# ─── Clasificadores de features (Inmobiliaria) ─────────────────────────────────
 FICHA_KEYS = [
     "ambientes", "dormitorios", "baños", "cocheras", "plantas", "antigüedad",
     "situación", "superficie", "terreno", "cubierta", "descubierta",
     "total construido", "frente", "fondo", "condición", "orientación",
     "m²", "expensas", "crédito"
 ]
-
-# Features de servicios e instalaciones
 SERVICIOS_KEYS = [
     "agua corriente", "gas natural", "electricidad", "cloaca", "pavimento",
     "internet", "cable", "telefono"
 ]
-
-# Features de distribución (ambientes / espacios de la propiedad)
 DISTRIBUCION_KEYS = [
     "cocina", "lavadero", "escritorio", "galería", "comedor", "living",
     "jardín", "terraza", "vestidor", "patio", "altillo", "laundry",
     "balcón", "quincho", "pileta", "luminoso", "parrilla", "playroom"
 ]
 
+# --- CONFIGURACIÓN DE HASHTAGS ---
+# --- 1. OPTIMIZACIÓN DE HASHTAGS (Modificá aquí los tags de tus redes) ---
 HASHTAGS = {
-    "inmobiliaria": "#inmobiliaria #propiedades #venta #alquiler #realstate #argentina #hogar #bienesraices #departamentos #casas",
-    "gastronomia": "#gastronomia #restaurante #comida #foodie #chef #argentina #foodstagram",
-    "ecommerce": "#tiendaonline #compraonline #calidad #envio #argentina #shopping",
+    "inmobiliaria_venta": "#inmobiliaria #propiedades #venta #realstate #argentina #hogar #bienesraices #departamentos #casas #oportunidad #inversion #vivienda #inmuebles #ramosmejia #haedo",
+    "inmobiliaria_alquiler": "#alquiler #departamentoenalquiler #alquileres #argentina #propiedades #inmobiliaria #buscoalquiler #vivienda #alquilamos #mudate #haedo #ramosmejia",
+    "gastronomia": "#gastronomia #restaurante #comida #foodie #chef #argentina #foodstagram #delivery #gourmet #dondecomer #salida",
+    "ecommerce": "#tiendaonline #compraonline #calidad #envio #argentina #shopping #oferta #productonuevo #enviosatodoelpais #pagosonline",
 }
 
+# --- 2. OPTIMIZACIÓN DE TÍTULOS Y EMOJIS (Cambiá el estilo de tus encabezados) ---
+OP_EMOJIS = {
+    "venta": "🔥 ¡OPORTUNIDAD DE VENTA! 🔥",
+    "alquiler": "🏠 ¡NUEVO ALQUILER DISPONIBLE! 🏠",
+    "default": "✨ PROPIEDAD DISPONIBLE ✨"
+}
 
 def _classify_features(features: list[str]) -> dict:
-    """Clasifica las features en tres categorías: ficha, servicios, distribución."""
     ficha = []
     servicios = []
     distribucion = []
@@ -68,161 +62,156 @@ def _classify_features(features: list[str]) -> dict:
         else:
             otras.append(f)
 
-    # Lo que no encaja en ninguna categoría va a distribución
     distribucion.extend(otras)
-
     return {"ficha": ficha, "servicios": servicios, "distribucion": distribucion}
 
-
-def _bullets(items: list[str], prefix: str = "\t•\t") -> str:
+def _bullets(items: list[str], prefix: str = "- ") -> str:
     return "\n".join(f"{prefix}{item}" for item in items)
-
 
 def generate_copy_local(nicho: str, data: dict) -> str:
     """
-    Genera copy estructurado usando templates. No requiere API key ni internet.
-
-    data debe tener: title, address, price, location, features (list o str), description
+    Genera copy estructurado usando templates locales.
+    Fácil de optimizar cambiando las secciones aquí.
     """
     address  = data.get("address", "").strip()
     location = data.get("location", "").strip()
     price    = data.get("price", "").strip()
     desc     = data.get("description", "").strip()
     features = data.get("features", [])
+    op_type  = data.get("operation_type", "venta") # venta o alquiler
 
     if isinstance(features, str):
         features = [f.strip() for f in re.split(r",|\n", features) if f.strip()]
 
-    cats = _classify_features(features)
+    # --- TEMPLATE INMOBILIARIA ---
+    if nicho == "inmobiliaria":
+        cats = _classify_features(features)
+        
+        # 1. ENCABEZADO
+        op_header = OP_EMOJIS.get(op_type, OP_EMOJIS["venta"])
+        loc_header = f"📍 {address} – {location}" if address and location else f"📍 {address or location or 'Propiedad'}"
+        
+        # 2. DESCRIPCIÓN
+        # Usamos la descripción completa si es corta, o extraemos un fragmento más natural.
+        descripcion = desc if len(desc) < 400 else desc[:397] + "..."
+        if not descripcion:
+             descripcion = f"Excelente propiedad en {location or 'la zona'}. Consultá más detalles."
+        
+        # 3. CARACTERÍSTICAS
+        secciones = []
+        if cats["distribucion"]:
+            secciones.append("**Distribución:**\n" + _bullets(cats["distribucion"][:8]))
+        
+        dorm_banos = [f for f in cats["ficha"] if any(k in f.lower() for k in ["dormitorio", "baño", "cochera"])]
+        if dorm_banos:
+            secciones.append("**Dormitorios y Baños:**\n" + _bullets(dorm_banos))
+        
+        if cats["servicios"]:
+            secciones.append("**Servicios e Instalaciones:**\n" + _bullets(cats["servicios"]))
 
-    # ── Encabezado de ubicación ──
-    if address and location:
-        header = f"📍 {address} – {location}"
-    elif address:
-        header = f"📍 {address}"
-    elif location:
-        header = f"📍 {location}"
+        caracteristicas_block = "### ✨ Características Principales:\n" + "\n\n".join(secciones) if secciones else ""
+        
+        # 4. FICHA TÉCNICA
+        ficha_rest = [f for f in cats["ficha"] if f not in dorm_banos]
+        ficha_block = "### 🔍 Ficha Técnica:\n" + _bullets(ficha_rest[:12]) if ficha_rest else ""
+        
+        # 5. PRECIO Y CTA
+        precio_linea = f"💰 **Precio: {price}**" if price and price.lower() != "consultar" else "💰 **Precio: Consultar**"
+        cta = "📲 **¿Querés visitarlo? Contactanos ahora:**\n- WhatsApp o llamada para coordinar una visita.\n- Web: www.urbanoprop.com"
+        
+        # 6. HASHTAGS
+        tags = HASHTAGS.get(f"inmobiliaria_{op_type}", HASHTAGS["inmobiliaria_venta"])
+
+        partes = [op_header, loc_header, descripcion]
+        if caracteristicas_block: partes.append(caracteristicas_block)
+        if ficha_block: partes.append(ficha_block)
+        partes.extend(["─" * 40, precio_linea, cta, tags])
+        return "\n\n".join(partes)
+
+    # --- TEMPLATE GASTRONOMÍA ---
+    elif nicho == "gastronomia":
+        header = f"🍴 {data.get('title', 'Nuestro Local').strip()}"
+        location_line = f"📍 Ubicación: {address or location}" if address or location else ""
+        descripcion = desc[:400] + ("..." if len(desc) > 400 else "") if desc else "Vení a disfrutar de la mejor experiencia gastronómica."
+        
+        features_block = "✨ Destacados de hoy:\n" + _bullets(features[:10]) if features else ""
+        cta = "📲 Hacé tu reserva o pedí delivery:\n\t•\tLink en bio o WhatsApp."
+        
+        partes = [header, descripcion]
+        if location_line: partes.append(location_line)
+        if features_block: partes.append(features_block)
+        partes.extend(["─" * 40, cta, HASHTAGS["gastronomia"]])
+        return "\n\n".join(partes)
+
+    # --- TEMPLATE ECOMMERCE ---
     else:
-        header = "📍 Propiedad en venta"
-
-    # ── Párrafo de descripción ──
-    if desc:
-        # Usar og:description pero acortado y en tono más amigable
-        desc_clean = desc[:300] + ("..." if len(desc) > 300 else "")
-        descripcion = desc_clean
-    else:
-        descripcion = f"Propiedad disponible en {location or 'la zona'}. Consultá más detalles."
-
-    # ── Características Principales ──
-    secciones = []
-
-    if cats["distribucion"]:
-        secciones.append(
-            "•\tDistribución:\n" + _bullets(cats["distribucion"][:8], prefix="\to\t")
-        )
-
-    # Separar dormitorios y baños de la ficha si están disponibles
-    dorm_banos = [f for f in cats["ficha"] if any(k in f.lower() for k in ["dormitorio", "baño", "cochera"])]
-    if dorm_banos:
-        secciones.append(
-            "•\tDormitorios y Baños:\n" + _bullets(dorm_banos, prefix="\to\t")
-        )
-
-    if cats["servicios"]:
-        secciones.append(
-            "•\tServicios e Instalaciones:\n" + _bullets(cats["servicios"], prefix="\to\t")
-        )
-
-    caracteristicas_block = ""
-    if secciones:
-        caracteristicas_block = "✨ Características Principales:\n" + "\n".join(secciones)
-
-    # ── Ficha Técnica ──
-    ficha_rest = [f for f in cats["ficha"] if f not in dorm_banos]
-    ficha_block = ""
-    if ficha_rest:
-        ficha_block = "🔍 Ficha Técnica:\n" + _bullets(ficha_rest[:12])
-
-    # ── Precio ──
-    precio_linea = f"💰 Precio: {price}" if price and price.lower() != "consultar" else "💰 Precio: Consultar"
-
-    # ── CTA ──
-    cta = "📲 ¿Querés visitarlo? Contactanos:\n\t•\tWhatsApp o llamada para coordinar una visita."
-
-    # ── Hashtags ──
-    hashtags = HASHTAGS.get(nicho, HASHTAGS["inmobiliaria"])
-
-    # ── Armado final ──
-    partes = [header, descripcion]
-    if caracteristicas_block:
-        partes.append(caracteristicas_block)
-    if ficha_block:
-        partes.append(ficha_block)
-    partes.append("─" * 40)
-    partes.append(precio_linea)
-    partes.append(cta)
-    partes.append(hashtags)
-
-    return "\n\n".join(partes)
-
+        header = f"📦 {data.get('title', 'Producto Imperdible').strip()}"
+        descripcion = desc[:400] + ("..." if len(desc) > 400 else "") if desc else "Calidad garantizada y el mejor precio del mercado."
+        
+        features_block = "✨ Especificaciones:\n" + _bullets(features[:10]) if features else ""
+        precio_linea = f"💰 Precio: {price}" if price else "💰 Precio: Consultar"
+        cta = "🛒 ¡Pedí el tuyo ahora!\n\t•\tEnvíos a todo el país.\n\t•\tCuotas sin interés."
+        
+        partes = [header, descripcion]
+        if features_block: partes.append(features_block)
+        partes.extend(["─" * 40, precio_linea, cta, HASHTAGS["ecommerce"]])
+        return "\n\n".join(partes)
 
 def generate_copy(nicho: str, data: dict, api_key: str = "") -> str:
-    """
-    Punto de entrada principal. Usa OpenAI si hay API key, template local si no.
-    """
     if not api_key or not api_key.strip():
         return generate_copy_local(nicho, data)
 
-    address  = data.get("address", "")
-    location = data.get("location", "")
+    title    = data.get("title", "Propiedad")
+    address  = data.get("address", "A consultar")
+    location = data.get("location", "Zona Oeste")
     price    = data.get("price", "Consultar")
-    features = data.get("features", "")
+    features = data.get("features", [])
     desc     = data.get("description", "")
+    op_type  = data.get("operation_type", "venta")
 
-    if isinstance(features, list):
-        features_str = "\n".join(f"- {f}" for f in features)
-    else:
-        features_str = features
+    features_str = "\n".join(f"- {f}" for f in features) if isinstance(features, list) else features
 
-    prompt = f"""Actuá como un especialista en marketing inmobiliario argentino.
-Generá una PROPUESTA DE COPY para publicaciones profesionales basada en estos datos:
-
-- Dirección: {address}
-- Barrio/Zona: {location}
-- Precio: {price}
-- Descripción: {desc}
-- Características:
-{features_str}
-
-La estructura EXACTA debe ser:
-1. Encabezado: "📍 [Dirección] – [Barrio]"
-2. Párrafo de descripción (2-3 oraciones, tono profesional y vendedor)
-3. Sección "✨ Características Principales:" con subsecciones:
-   • Distribución (espacios de la propiedad)
-   • Dormitorios y Baños
-   • Servicios e Instalaciones
-4. Sección "🔍 Ficha Técnica:" con los datos numéricos (m², ambientes, antigüedad, expensas, etc.)
-5. Línea "💰 Precio: [precio]"
-6. Sección "📲 ¿Querés visitarlo? Contactanos:" con bullet de WhatsApp/llamada
-7. Hashtags inmobiliarios argentinos
-
-Escribí en español rioplatense. Tono profesional pero cercano. Solo el copy, sin comentarios."""
-
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    payload = {
-        "model": "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": "Sos un experto en marketing inmobiliario en Argentina."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.7
-    }
-
+    import google.generativeai as genai
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+
+        if nicho == "inmobiliaria":
+            prompt = f"""
+            Sos un Copywriter experto en Real Estate de Argentina. 
+            Transformá estos datos en un texto publicitario persuasivo y ordenado.
+            
+            DATOS:
+            - Operación: {op_type}
+            - Título: {title}
+            - Dirección: {address}
+            - Zona: {location}
+            - Precio: {price}
+            - Descripción Original: {desc}
+            - Características Crudas: {features_str}
+
+            REGLAS DE FORMATO (Markdown):
+            1. H2 para el título con un emoji.
+            2. 📍 **[{address or location}]**.
+            3. Un párrafo introductorio vendedor.
+            4. ### ✨ Características Principales: (agrupadas con viñetas lógicas).
+            5. ### 🔍 Ficha Técnica: (datos duros).
+            6. Separador ---
+            7. 💰 **Precio: {price}**
+            8. 📲 **Contactanos:** (Incluir WhatsApp y web www.urbanoprop.com)
+            
+            Escribí en español rioplatense. Devolvé SOLO el copy formateado.
+            """
+        else:
+            prompt = f"""Sos un experto en marketing de {nicho} en Argentina. 
+            Generá un copy persuasivo y estructurado para: {title}.
+            Precio: {price}
+            Descripción: {desc}
+            Características: {features_str}
+            Escribí en español rioplatense. Solo el copy, sin comentarios."""
+
+        response = model.generate_content(prompt)
+        return response.text.strip()
     except Exception as e:
-        print(f"[Copy] OpenAI falló ({e}), usando template local.")
+        print(f"Error con Gemini: {e}")
         return generate_copy_local(nicho, data)

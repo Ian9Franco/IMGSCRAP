@@ -65,4 +65,20 @@ El frontend es una Single Page Application (SPA) moderna enfocada en la experien
 2.  `app.py` recibe la petición e instancia un `ImageScraper` en un hilo nuevo.
 3.  `scraper.py` descarga las imágenes, las convierte y las guarda.
 4.  El frontend consulta `/api/scrape/status` periódicamente para actualizar la UI.
-5.  Una vez descargadas, el usuario puede renombrar imágenes masivamente o exportarlas a una carpeta definitiva.
+6.  **Exportación:** Al mover a la carpeta final, el sistema calcula automáticamente el siguiente número de serie para mantener el orden.
+
+---
+
+## Estructura de Sesión y Exportación
+
+### Carpeta de Sesión (Local)
+Cada vez que se inicia un scrapeo, se crea una carpeta con la siguiente estructura:
+- `recursos/fotos/`: Contiene todas las imágenes descargadas y procesadas (.jpg).
+- `copy_propiedad.docx`: Documento Word con la información de la propiedad.
+- `copy_propiedad.txt`: Versión en texto plano del copy para carga rápida en la app.
+
+### Lógica de Exportación (Smart Numbering)
+Al exportar una sesión a una carpeta de destino final, la aplicación aplica una lógica de nomenclatura profesional:
+1. **Escaneo de Destino:** Analiza la carpeta destino en busca de carpetas que comiencen con números (ej: `15-...`, `16-...`).
+2. **Cálculo de Serial:** Determina el número más alto y le suma 1 (ej: `17`).
+3. **Renombrado Automático:** Mueve la sesión completa y la renombra siguiendo el patrón `NN-Direccion-V1`.
