@@ -35,6 +35,13 @@ class ImageScraper:
         self.is_running = False
 
     def _get_best_image_url(self, img_tag, base_url):
+        # Prioridad 0: Si está envuelta en un link a la imagen original (común en galerías)
+        parent_a = img_tag.find_parent('a')
+        if parent_a and parent_a.get('href'):
+            href = parent_a.get('href')
+            if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                return urljoin(base_url, href)
+
         # Busco en estos atributos porque ahí suelen guardar las imágenes en alta resolución
         candidates = [
             img_tag.get('data-big'),
@@ -42,6 +49,8 @@ class ImageScraper:
             img_tag.get('data-src-huge'),
             img_tag.get('data-src-large'),
             img_tag.get('data-src'),
+            img_tag.get('data-lazy-src'),
+            img_tag.get('data-lazy'),
             img_tag.get('srcset'),
             img_tag.get('src')
         ]
@@ -51,16 +60,46 @@ class ImageScraper:
             if not candidate:
                 continue
                 
-            # Si la imagen es responsive (srcset), me quedo con la última que casi siempre es la más grande
-            if ',' in candidate and ' ' in candidate:
-                parts = candidate.split(',')
-                candidate = parts[-1].strip().split(' ')[0]
+            # Si la imagen es responsive (srcset), intentamos quedarnos con la más grande
+            if ',' in candidate:
+                try:
+                    # Formato: "url1 300w, url2 600w" o "url1, url2 2x"
+                    parts = [p.strip().split(' ') for p in candidate.split(',')]
+                    # Ordenamos por el descriptor de ancho si existe, sino tomamos el último
+                    # Si el descriptor es como '1024w', sacamos la 'w' y convertimos a int
+                    def get_width(p):
+                        if len(p) > 1 and p[1].endswith('w'):
+                            try: return int(p[1][:-1])
+                            except: return 0
+                        return 0
+                    parts.sort(key=get_width, reverse=True)
+                    candidate = parts[0][0]
+                except:
+                    # Fallback al último si falla el parseo
+                    candidate = candidate.split(',')[-1].strip().split(' ')[0]
             
             if candidate:
                 best_url = urljoin(base_url, candidate)
                 break
                 
         return best_url
+
+    def _find_images_in_scripts(self, soup):
+        """Busca URLs de imágenes dentro de bloques de script (JSON de estado inicial)."""
+        import re
+        found_urls = []
+        for script in soup.find_all("script"):
+            if script.string and len(script.string) > 100: # Solo scripts grandes (posibles JSON)
+                # Regex para encontrar URLs de imágenes directas (Zonaprop y otros)
+                # Buscamos patrones comunes de servidores de imágenes
+                urls = re.findall(r'https?://[^\s"\'<>]+?\.(?:jpg|jpeg|png|webp)', script.string)
+                for u in urls:
+                    # Filtrar logos, iconos y trackers comunes
+                    low = u.lower()
+                    if any(x in low for x in ['logo', 'icon', 'marker', 'avatar', 'google', 'facebook', 'tracker']):
+                        continue
+                    found_urls.append(u)
+        return list(set(found_urls))
 
     def _download_image(self, img_url: str):
         """
@@ -120,6 +159,14 @@ class ImageScraper:
                     continue
                 seen_urls.add(img_url)
                 candidate_urls.append(img_url)
+
+            # Fallback: si no encontramos casi nada en <img> (posible SPA como Zonaprop), buscamos en scripts
+            if len(candidate_urls) < 5:
+                script_urls = self._find_images_in_scripts(soup)
+                for s_url in script_urls:
+                    if s_url not in seen_urls:
+                        candidate_urls.append(s_url)
+                        seen_urls.add(s_url)
 
             seen_hashes = set()
             downloaded_count = 0

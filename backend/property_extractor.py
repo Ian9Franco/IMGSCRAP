@@ -33,8 +33,25 @@ def _og_meta(soup, prop):
     return tag["content"].strip() if tag and tag.get("content") else ""
 
 
+def _normalize_price(raw_text: str) -> str:
+    """Extrae y normaliza el precio (ej: 'u$s 270.000.- - Casa' -> 'USD 270.000')"""
+    for pattern in PRICE_PATTERNS:
+        match = re.search(pattern, raw_text, re.IGNORECASE)
+        if match:
+            val = match.group(0).upper()
+            # Normalizar U$S, U$s, etc a USD
+            val = re.sub(r'U\$S?', 'USD', val, flags=re.IGNORECASE)
+            # Asegurar espacio entre moneda y número
+            val = re.sub(r'(USD|\$)([\d.,]+)', r'\1 \2', val)
+            # Eliminar espacios extra
+            val = " ".join(val.split())
+            return val
+    # Si no matchea nada, devuelve el texto limpio o nada
+    return ""
+
 def _find_price(soup, text_fallback=""):
     """Busca precio en el DOM o en texto libre."""
+    raw_price = ""
     # Selectores comunes en portales inmobiliarios argentinos
     for selector in [
         "[class*='price']", "[class*='precio']", "[itemprop='price']",
@@ -42,13 +59,16 @@ def _find_price(soup, text_fallback=""):
     ]:
         el = soup.select_one(selector)
         if el and el.get_text(strip=True):
-            return el.get_text(strip=True)
+            raw_price = el.get_text(strip=True)
+            # Intentamos normalizar desde el elemento
+            norm = _normalize_price(raw_price)
+            if norm:
+                return norm
 
-    # Búsqueda por regex en texto completo
-    for pattern in PRICE_PATTERNS:
-        match = re.search(pattern, text_fallback)
-        if match:
-            return match.group(0)
+    # Si no encontró en los elementos o no pudo normalizar, busca en todo el texto
+    norm_fallback = _normalize_price(text_fallback)
+    if norm_fallback:
+        return norm_fallback
 
     return "Consultar"
 
