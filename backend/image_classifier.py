@@ -15,30 +15,44 @@ from io import BytesIO
 from typing import Optional
 import threading
 
-# ─────────────────────────────────────────────
-# Modelo CLIP (cargado una sola vez, lazy)
-# ─────────────────────────────────────────────
 _model = None
 _model_lock = threading.Lock()
 _model_ready = False
 
-# Cache de embeddings de texto: evita recalcular los labels del nicho en cada imagen
-# Las etiquetas son fijas en runtime, así que calculamos una sola vez y guardamos.
+# Cache de embeddings de texto
 _text_embeddings_cache: dict[str, object] = {}
 
-def load_model():
+from agent_logger import agent_log
+
+def load_model(model_name: str = "CLIP"):
     """Carga el modelo CLIP en background al arrancar el backend."""
     global _model, _model_ready
+    model_id = "clip-ViT-B-32"
+    
     try:
         from sentence_transformers import SentenceTransformer
         with _model_lock:
-            if _model is None:
-                print("[CLIP] Cargando modelo clip-ViT-B-32...")
-                _model = SentenceTransformer("clip-ViT-B-32")
-                _model_ready = True
-                print("[CLIP] Modelo listo.")
+            if _model is not None:
+                return
+
+            _model_ready = False
+            agent_log.log("Brain", "Iniciando motor de visión (CLIP)...")
+            print(f"[IA] Cargando {model_id}...", flush=True)
+            
+            _model = SentenceTransformer(model_id)
+            _model_ready = True
+            
+            agent_log.log("Brain", "¡Motor CLIP listo para trabajar!")
+            print(f"[IA] CLIP listo.", flush=True)
     except Exception as e:
-        print(f"[CLIP] Error al cargar modelo: {e}")
+        agent_log.log("Brain", f"Error cargando CLIP: {e}", "ERROR")
+        print(f"[IA] Error: {e}", flush=True)
+
+def reset_model():
+    global _model, _model_ready
+    with _model_lock:
+        _model = None
+        _model_ready = False
 
 def is_model_ready() -> bool:
     return _model_ready
@@ -53,15 +67,20 @@ def _get_model():
 NICHO_TAGS: dict[str, list[str]] = {
     "inmobiliaria": [
         "fachada exterior del edificio",
-        "cocina moderna",
-        "baño con azulejos",
-        "dormitorio con cama",
-        "living comedor",
-        "jardín o patio exterior",
-        "terraza o balcón",
-        "cochera o garaje",
-        "pileta o piscina",
-        "quincho o parrilla",
+        "cocina moderna equipada",
+        "baño con sanitarios y azulejos",
+        "dormitorio principal con cama",
+        "living comedor amplio",
+        "jardín, patio o parque exterior",
+        "terraza o balcón con vista",
+        "cochera, garaje o entrada de auto",
+        "pileta, piscina o solarium",
+        "quincho, parrilla o espacio social",
+        "pasillo, corredor o entrada interna",
+        "escaleras internas de madera o piedra",
+        "lavadero o habitación de servicio",
+        "vista panorámica desde ventana con luz natural",
+        "detalle de aberturas o ventanas",
     ],
     "gastronomia": [
         "plato de comida principal",
@@ -94,9 +113,9 @@ IRRELEVANT_LABELS = [
     "cartel o letrero de texto",
 ]
 
-# Umbral de similitud: si la similitud con cualquier tag del nicho >= THRESHOLD, es relevante
-RELEVANCE_THRESHOLD  = 0.22   # empírico, ajustar según resultados
-IRRELEVANT_THRESHOLD = 0.28   # si supera esto en irrelevante, descartamos directo
+# Umbral de similitud CLIP:
+RELEVANCE_THRESHOLD  = 0.18   # Menos estricto para que no se pierdan fotos
+IRRELEVANT_THRESHOLD = 0.28   # Más margen para evitar falsos descartes
 
 
 # ─────────────────────────────────────────────
@@ -166,9 +185,27 @@ def classify_image(img: Image.Image, nicho: str = "inmobiliaria") -> dict:
         is_irrelevant = top_irrelevant_score >= IRRELEVANT_THRESHOLD
         is_relevant   = (not is_irrelevant) and (top_nicho_score >= RELEVANCE_THRESHOLD)
 
-        # Normalizar el label para usarlo como tag (solo la primera palabra descriptiva)
+        # Mapeo de labels largos a tags amigables en español
+        TAG_MAPPING = {
+            "fachada exterior del edificio": "Fachada",
+            "cocina moderna equipada": "Cocina",
+            "baño con sanitarios y azulejos": "Baño",
+            "dormitorio principal con cama": "Dormitorio",
+            "living comedor amplio": "Living",
+            "jardín, patio o parque exterior": "Patio",
+            "terraza o balcón con vista": "Terraza",
+            "cochera, garaje o entrada de auto": "Cochera",
+            "pileta, piscina o solarium": "Piscina",
+            "quincho, parrilla o espacio social": "Quincho",
+            "pasillo, corredor o entrada interna": "Pasillo",
+            "escaleras internas de madera o piedra": "Escaleras",
+            "lavadero o habitación de servicio": "Lavadero",
+            "vista panorámica desde ventana con luz natural": "Iluminacion",
+            "detalle de aberturas o ventanas": "Ventana",
+        }
+        
         raw_tag = nicho_labels[top_nicho_idx]
-        short_tag = raw_tag.split()[0].capitalize()   # ej. "fachada"
+        short_tag = TAG_MAPPING.get(raw_tag, raw_tag.split()[0].capitalize())
 
         return {
             "is_relevant":      is_relevant,

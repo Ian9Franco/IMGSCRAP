@@ -1,47 +1,58 @@
-# Documentación de la API Backend
+# Referencia de API — scrap.io
 
-El backend está construido con **FastAPI** y se ejecuta en `http://localhost:8000`.
+El backend de scrap.io expone una API REST construida con FastAPI en `http://localhost:8000`.
 
-## Endpoints
+---
 
-### 1. Iniciar Extracción
-**`POST /api/scrape/start`**
-Inicia el proceso de descarga de imágenes en segundo plano.
-- **Body**:
-  ```json
-  {
-    "url": "https://ejemplo.com/propiedad",
-    "dest_folder": "D:/MisPropiedades/Malabia648"
-  }
-  ```
-- **Response**: `{ "job_id": "uuid-string" }`
+## 📸 1. Imágenes y Scraping
 
-### 2. Estado del Trabajo
-**`GET /api/scrape/status/{job_id}`**
-Devuelve el progreso del trabajo y la lista de fotos descargadas.
-- **Response**:
-  ```json
-  {
-    "is_running": true,
-    "current": 5,
-    "total": 10,
-    "message": "Descargando: imagen.jpg...",
-    "images": ["D:/.../image_1.jpg", "D:/.../image_2.jpg"]
-  }
-  ```
+### Iniciar Scrapeo
+`POST /api/scrape/start`
+Inicia la descarga y clasificación asíncrona.
+*   **Body**: `{ "url": str, "dest_folder": str, "use_ai": bool, "nicho": str }`
 
-### 3. Renombrar Imagen
-**`POST /api/images/rename`**
-Cambia el nombre físico de una foto en el disco duro.
-- **Body**:
-  ```json
-  {
-    "old_path": "D:/.../image_1.jpg",
-    "new_tag": "Cocina"
-  }
-  ```
-- **Response**: `{ "old_path": "...", "new_path": "...", "new_name": "cocina.jpg" }`
+### Estado del Scrapeo
+`GET /api/scrape/status/{job_id}`
+Devuelve el progreso y las imágenes encontradas hasta el momento.
 
-### 4. Servir Imágenes (Estático)
-**`GET /api/images/serve?path=D:/ruta/absoluta.jpg`**
-Sirve la imagen para que el frontend pueda visualizarla como miniatura.
+### Clasificación Retroactiva
+`POST /api/images/classify-existing`
+Clasifica imágenes que ya están en el disco (útil para sesiones antiguas).
+
+---
+
+## ✍️ 2. Inteligencia Artificial (Copy)
+
+### Extraer Metadatos
+`POST /api/property/extract`
+Analiza una URL y extrae Título, Precio, Dirección y Características.
+*   **Response**: `{ "title": str, "price": str, "features": list, ... }`
+
+### Generar Copy
+`POST /api/copy/generate`
+Genera una publicación completa usando Gemini o Plantillas Locales.
+*   **Body**: `{ "nicho": str, "data": dict, "property_folder": str }`
+
+### Editar con IA
+`POST /api/copy/edit`
+Modifica un texto existente basado en una instrucción del usuario.
+*   **Body**: `{ "current_copy": str, "prompt": str }`
+
+---
+
+## 📂 3. Sistema y Archivos
+
+### Sugerir Nombre de Carpeta
+`GET /api/folder/suggest?address=CALLE`
+Calcula el siguiente serial y versión para una nueva propiedad.
+
+### Abrir Selector Nativo
+`GET /api/browse/folder`
+Abre el diálogo de carpetas de Windows (via PowerShell).
+
+### Consultar Logs (Real-time)
+`GET /api/logs`
+Devuelve los últimos eventos del sistema para la Agent Console.
+
+---
+* scrap.io API Docs v4.0 *

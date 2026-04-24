@@ -79,7 +79,7 @@ os.makedirs(get_config()["base_dir"], exist_ok=True)  # Me aseguro de que mi car
 
 app = FastAPI(title="Image Scraper API")
 
-# Cargo el modelo CLIP en background al arrancar para que esté listo cuando el usuario lo necesite
+# Cargo el modelo de IA en background al arrancar
 _clip_thread = threading.Thread(target=load_model, daemon=True)
 _clip_thread.start()
 
@@ -118,6 +118,7 @@ class CopyRequest(BaseModel):
     nicho: str
     data: dict
     property_folder: str
+    use_ai: bool = True
 
 class CopyEditRequest(BaseModel):
     current_copy: str
@@ -180,6 +181,46 @@ def api_get_config():
 def api_set_config(req: ConfigRequest):
     new_config = set_config(req.base_dir, req.openai_api_key)
     return {"status": "success", "config": new_config}
+
+@app.post("/api/ai/status")
+def api_ai_status(req: dict):
+    enabled = req.get("enabled", False)
+    if enabled:
+        agent_log.log("BRAIN", "Brain Mode activado. Iniciando auto-diagnóstico...")
+        # Intentamos un ping a Gemini para ver qué pasa
+        config = get_config()
+        api_key = config.get("openai_api_key")
+        if not api_key:
+            agent_log.log("GEMINI", "Error: No hay API Key configurada.", "ERROR")
+            return {"status": "no_key"}
+            
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            
+            # Listamos modelos para debuggear el 404
+            agent_log.log("GEMINI", "Verificando modelos disponibles en tu cuenta...")
+            models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            agent_log.log("GEMINI", f"Modelos detectados: {', '.join(models)}")
+            
+            # Prueba de fuego: Usamos el modelo LITE para el ping (evita límites de cuota bajos del 3.0)
+            test_model = "models/gemini-flash-lite-latest" if "models/gemini-flash-lite-latest" in models else models[0]
+            agent_log.log("GEMINI", f"Probando conexión estable con motor LITE: {test_model}")
+            
+            m = genai.GenerativeModel(test_model)
+            agent_log.log("GEMINI", f"Motor de diagnóstico activo: {m.model_name}")
+            res = m.generate_content("Decime el nombre de un personaje de Marvel al azar. Solo el nombre, sin puntos ni explicaciones.")
+            
+            char_name = res.text.strip().upper()
+            agent_log.log("GEMINI-RESPONSE", f"SISTEMA ONLINE: {char_name}")
+            
+            return {"status": "ok", "models": models}
+        except Exception as e:
+            agent_log.log("GEMINI", f"Error en diagnóstico: {e}", "ERROR")
+            return {"status": "error", "error": str(e)}
+    else:
+        agent_log.log("BRAIN", "Brain fue desactivado, todas las IA se suspenden.")
+        return {"status": "disabled"}
 
 @app.get("/api/folder/suggest")
 def api_suggest_folder(address: str):
@@ -318,8 +359,7 @@ def api_classify_existing(req: ClassifyExistingRequest):
 def api_generate_copy(req: CopyRequest):
     config = get_config()
     api_key = config.get("openai_api_key", "")
-    # Si no hay API key usa el template local automáticamente (no bloquea)
-    copy_text = generate_copy(req.nicho, req.data, api_key)
+    copy_text = generate_copy(req.nicho, req.data, api_key, req.use_ai)
     
     if not copy_text.startswith("⚠️"):
         folder_path = os.path.join(config["base_dir"], req.property_folder)
@@ -349,12 +389,11 @@ def api_edit_copy(req: CopyEditRequest):
         
     import google.generativeai as genai
     import os
-    os.environ["GOOGLE_API_USE_MTLS_ENDPOINT"] = "never"
     genai.configure(api_key=api_key)
     
     # Configuramos el 'Brain' con una personalidad definida
     model = genai.GenerativeModel(
-        model_name="gemini-flash-latest",
+        model_name="models/gemini-2.5-flash",
         system_instruction="Eres el motor 'Brain' de AGENT.IO. Tu función es editar copys inmobiliarios. "
                            "Eres experto en marketing de Real Estate. Si el usuario pide cambiar valores "
                            "numéricos (como precios), hacelo manteniendo el formato Markdown original. "
@@ -368,12 +407,13 @@ def api_edit_copy(req: CopyEditRequest):
         
         prompt = f"Este es el copy actual:\n{req.current_copy}\n\nInstrucción del usuario: {req.prompt}"
         
-        agent_log.log("GEMINI", f"Enviando solicitud a la IA...")
+        agent_log.log("GEMINI", f"Editor activo: {model.model_name}")
         agent_log.log("GEMINI-PROMPT", prompt)
         
         response = model.generate_content(prompt)
         
         agent_log.log("GEMINI-RESPONSE", response.text.strip())
+        agent_log.log("BRAIN", "Gemini 2.5 finalizó. Volviendo a modo Standby (1.5).")
         
         return {"copy": response.text.strip()}
     except Exception as e:
