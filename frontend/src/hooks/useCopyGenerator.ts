@@ -23,12 +23,25 @@ export interface CopyGeneratorState {
   copyData: CopyData;
   generatedCopy: string;
   isGeneratingCopy: boolean;
+  isAiEnabled: boolean;
+  isExtractionAiEnabled: boolean;
+  setIsAiEnabled: (v: boolean) => void;
+  setIsExtractionAiEnabled: (v: boolean) => void;
+  isEditingCopy: boolean;
   isExtracting: boolean;
   extractedOk: boolean;
-  isEditingCopy: boolean;
   geminiVersion: string;
+  generationEngine: string;
+  editEngine: string;
+  setGenerationEngine: (v: string) => void;
+  setEditEngine: (v: string) => void;
   setCopyData: (data: CopyData) => void;
   setGeneratedCopy: (text: string) => void;
+  versions: string[];
+  currentFilename: string;
+  extractionEngine: string;
+  setExtractionEngine: (v: string) => void;
+  loadSpecificVersion: (propertyName: string, filename: string) => Promise<void>;
   generateCopy: (nicho: string, propertyName: string) => Promise<void>;
   editCopy: (prompt: string) => Promise<void>;
   saveDocx: (propertyName: string) => Promise<void>;
@@ -38,7 +51,7 @@ export interface CopyGeneratorState {
 export function useCopyGenerator(
   url: string,
   nicho: string,
-  isAiEnabled: boolean = true
+  isAiEnabledDefault: boolean = true
 ): CopyGeneratorState {
   const [copyData, setCopyData] = useState<CopyData>(EMPTY_COPY_DATA);
   const [generatedCopy, setGeneratedCopy] = useState("");
@@ -46,13 +59,27 @@ export function useCopyGenerator(
   const [isEditingCopy, setIsEditingCopy] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractedOk, setExtractedOk] = useState(false);
+  const [isAiEnabled, setIsAiEnabled] = useState(isAiEnabledDefault);
+  const [isExtractionAiEnabled, setIsExtractionAiEnabled] = useState(false);
   const [geminiVersion, setGeminiVersion] = useState("LITE");
+  const [generationEngine, setGenerationEngine] = useState("local_phi3");
+  const [extractionEngine, setExtractionEngine] = useState("local_phi3");
+  const [editEngine, setEditEngine] = useState("cloud_gemini");
+  const [versions, setVersions] = useState<string[]>([]);
+  const [currentFilename, setCurrentFilename] = useState("");
 
   // Escucha el evento emitido por loadSession cuando hay copy guardado en la carpeta
+  useEffect(() => {
+    setIsAiEnabled(isAiEnabledDefault);
+  }, [isAiEnabledDefault]);
+
   useEffect(() => {
     const handler = (e: Event) => {
       const ev = e as CustomEvent<{
         copy?: string;
+        url?: string;
+        versions?: string[];
+        filename?: string;
         raw_data?: {
           title?: string;
           address?: string;
@@ -61,6 +88,7 @@ export function useCopyGenerator(
           features?: string | string[];
           description?: string;
           operation_type?: string;
+          url?: string;
         };
       } | string>;
       const payload = ev.detail;
@@ -69,6 +97,12 @@ export function useCopyGenerator(
       if (payload && typeof payload === 'object') {
         if (payload.copy) {
           setGeneratedCopy(payload.copy);
+        }
+        if (payload.versions) {
+          setVersions(payload.versions);
+        }
+        if (payload.filename) {
+          setCurrentFilename(payload.filename);
         }
         if (payload.raw_data) {
           setCopyData({
@@ -83,6 +117,11 @@ export function useCopyGenerator(
             operation_type: payload.raw_data.operation_type || "venta",
           });
         }
+        // Si viene una URL, avisamos para que se pueble el campo de link
+        const finalUrl = payload.url || (payload.raw_data?.url);
+        if (finalUrl) {
+          window.dispatchEvent(new CustomEvent("imgscrap:url-loaded", { detail: finalUrl }));
+        }
       } else if (typeof payload === 'string') {
         // Fallback por si acaso
         setGeneratedCopy(payload);
@@ -92,17 +131,23 @@ export function useCopyGenerator(
     return () => window.removeEventListener("imgscrap:copy-loaded", handler);
   }, []);
 
-  // Auto-extrae datos de la propiedad al pegar una URL (debounce 800ms)
+  // Auto-extrae datos de la propiedad al pegar una URL (debounce 1500ms)
   useEffect(() => {
     if (!url || !url.startsWith("http") || nicho !== "inmobiliaria") return;
-    const timer = setTimeout(async () => {
+    
+    const extract = async () => {
       setExtractedOk(false);
       setIsExtracting(true);
       try {
+        const engine = isExtractionAiEnabled ? extractionEngine : null;
         const res = await fetch(`${API_BASE}/api/property/extract`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, nicho }),
+          body: JSON.stringify({ 
+            url, 
+            nicho, 
+            engine 
+          }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -137,29 +182,35 @@ export function useCopyGenerator(
         }
       } catch { /* falla silenciosa */ }
       finally { setIsExtracting(false); }
-    }, 800);
+    };
+    
+    const timer = setTimeout(extract, 1500);
     return () => clearTimeout(timer);
-  }, [url, nicho]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [url, nicho, generationEngine, extractionEngine, isExtractionAiEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const generateCopy = useCallback(async (nicho: string, propertyName: string) => {
     if (!propertyName) {
-      toast.error("Seleccioná una carpeta o sesión primero");
+      toast.error("Primero definí una carpeta de destino");
       return;
     }
+    
     setIsGeneratingCopy(true);
-    setGeminiVersion("2.5");
+    // Solo activamos modo '2.5' (efecto visual de IA) si hay IA habilitada
+    if (isAiEnabled) setGeminiVersion("2.5");
+
     try {
       const res = await fetch(`${API_BASE}/api/copy/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           nicho,
-          use_ai: isAiEnabled,
           data: {
             ...copyData,
             features: copyData.features.split(",").map(f => f.trim()),
           },
           property_folder: propertyName,
+          use_ai: isAiEnabled,
+          engine: isAiEnabled ? generationEngine : null
         }),
       });
       if (res.ok) {
@@ -176,7 +227,7 @@ export function useCopyGenerator(
       setIsGeneratingCopy(false);
       setGeminiVersion("LITE");
     }
-  }, [copyData, isAiEnabled]);
+  }, [copyData, isAiEnabled, generationEngine]);
 
   const editCopy = useCallback(async (prompt: string) => {
     if (!generatedCopy || !prompt) return;
@@ -186,7 +237,11 @@ export function useCopyGenerator(
       const res = await fetch(`${API_BASE}/api/copy/edit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ current_copy: generatedCopy, prompt }),
+        body: JSON.stringify({ 
+          current_copy: generatedCopy, 
+          prompt,
+          engine: editEngine
+        }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -202,7 +257,21 @@ export function useCopyGenerator(
       setIsEditingCopy(false);
       setGeminiVersion("LITE");
     }
-  }, [generatedCopy]);
+  }, [generatedCopy, editEngine]);
+  
+  const loadSpecificVersion = useCallback(async (propertyName: string, filename: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/copy/load?folder_name=${propertyName}&filename=${filename}`);
+      if (res.ok) {
+        const data = await res.json();
+        setGeneratedCopy(data.copy);
+        setCurrentFilename(data.filename);
+        toast.success(`Cargada versión: ${filename}`);
+      }
+    } catch {
+      toast.error("Error al cargar la versión específica");
+    }
+  }, []);
 
   const saveDocx = useCallback(async (propertyName: string) => {
     if (!propertyName || !generatedCopy) return;
@@ -218,12 +287,16 @@ export function useCopyGenerator(
         }),
       });
       if (res.ok) {
-        toast.success("Documento Word (.docx) actualizado");
+        toast.success("Documento word guardado");
+        
+        // Recargar la lista de versiones para que el dropdown se actualice si creamos un V2/V3
+        loadSpecificVersion(propertyName, ""); 
       } else {
-        toast.error("Error al actualizar el docx");
+        const err = await res.json();
+        toast.error(`Error: ${err.detail || "No se pudo guardar el documento"}`);
       }
     } catch {
-      toast.error("Error al guardar el docx");
+      toast.error("Error al conectar con el servidor para guardar el docx");
     }
   }, [generatedCopy, copyData]);
 
@@ -235,6 +308,17 @@ export function useCopyGenerator(
 
   return {
     copyData, generatedCopy, isGeneratingCopy, isExtracting, extractedOk, isEditingCopy, geminiVersion,
-    setCopyData, setGeneratedCopy, generateCopy, editCopy, saveDocx, copyCopyToClipboard,
+    isAiEnabled, setIsAiEnabled,
+    generationEngine, editEngine, setGenerationEngine, setEditEngine,
+    setCopyData, setGeneratedCopy, generateCopy, editCopy,
+    saveDocx,
+    copyCopyToClipboard,
+    versions,
+    currentFilename,
+    loadSpecificVersion,
+    isExtractionAiEnabled,
+    setIsExtractionAiEnabled,
+    extractionEngine,
+    setExtractionEngine
   };
 }

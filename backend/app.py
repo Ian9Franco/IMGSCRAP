@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from typing import Optional
 import os
 import uuid
 import threading
@@ -14,8 +15,11 @@ from image_classifier import load_model, is_model_ready, classify_image, NICHO_T
 from copy_generator import generate_copy
 from document_generator import generate_property_doc
 from property_extractor import extract_property_data
-from config_manager import AppConfig, get_config_obj, save_config_obj
+from copy_service import generate_copy_v2
+from copy_engine import generate_with_engine
+from llm_local import generate_local
 from agent_logger import agent_log
+from config_manager import get_config_obj, save_config_obj
 
 def get_config():
     conf = get_config_obj()
@@ -119,10 +123,12 @@ class CopyRequest(BaseModel):
     data: dict
     property_folder: str
     use_ai: bool = True
+    engine: Optional[str] = None # 'local_phi3', 'local_gemma3' o 'cloud_gemini'
 
 class CopyEditRequest(BaseModel):
     current_copy: str
     prompt: str
+    engine: str = "cloud_gemini"
 
 class SaveCopyRequest(BaseModel):
     copy: str
@@ -133,6 +139,7 @@ class SaveCopyRequest(BaseModel):
 class ExtractRequest(BaseModel):
     url: str
     nicho: str = "inmobiliaria"
+    engine: Optional[str] = None # Opcional: para mejorar la extracción con IA
 
 class ClassifyExistingRequest(BaseModel):
     image_paths: list[str]
@@ -149,6 +156,22 @@ def start_scrape_job(job_id: str, url: str, dest_folder: str, only_large: bool, 
         nicho=nicho,
     )
     jobs[job_id]["scraper"] = scraper
+    
+    # Guardamos la URL en property_data.json para que al cargar la carpeta se recupere todo
+    try:
+        os.makedirs(dest_folder, exist_ok=True)
+        data_path = os.path.join(dest_folder, "property_data.json")
+        meta = {"url": url}
+        if os.path.exists(data_path):
+            with open(data_path, "r", encoding="utf-8") as f:
+                try: meta = json.load(f)
+                except: pass
+        meta["url"] = url
+        with open(data_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[Scrape] Error guardando URL en metadatos: {e}")
+
     # Las imágenes van a una subcarpeta específica
     image_path = os.path.join(dest_folder, "recursos", "fotos")
     scraper.start_scraping(url, dest_folder, image_path)
@@ -187,36 +210,29 @@ def api_ai_status(req: dict):
     enabled = req.get("enabled", False)
     if enabled:
         agent_log.log("BRAIN", "Brain Mode activado. Iniciando auto-diagnóstico...")
-        # Intentamos un ping a Gemini para ver qué pasa
-        config = get_config()
-        api_key = config.get("openai_api_key")
-        if not api_key:
-            agent_log.log("GEMINI", "Error: No hay API Key configurada.", "ERROR")
-            return {"status": "no_key"}
-            
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
+            config = get_config()
+            api_key = config.get("openai_api_key")
             
-            # Listamos modelos para debuggear el 404
-            agent_log.log("GEMINI", "Verificando modelos disponibles en tu cuenta...")
-            models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            agent_log.log("GEMINI", f"Modelos detectados: {', '.join(models)}")
-            
-            # Prueba de fuego: Usamos el modelo LITE para el ping (evita límites de cuota bajos del 3.0)
-            test_model = "models/gemini-flash-lite-latest" if "models/gemini-flash-lite-latest" in models else models[0]
-            agent_log.log("GEMINI", f"Probando conexión estable con motor LITE: {test_model}")
-            
-            m = genai.GenerativeModel(test_model)
-            agent_log.log("GEMINI", f"Motor de diagnóstico activo: {m.model_name}")
-            res = m.generate_content("Decime el nombre de un personaje de Marvel al azar. Solo el nombre, sin puntos ni explicaciones.")
-            
-            char_name = res.text.strip().upper()
-            agent_log.log("GEMINI-RESPONSE", f"SISTEMA ONLINE: {char_name}")
-            
-            return {"status": "ok", "models": models}
+            # 1. Saludo a Gemini Cloud
+            if api_key:
+                agent_log.log("BRAIN", "Saludando a la nube (Gemini Cloud)...")
+                hi_cloud = generate_with_engine("Decí 'GEMINI ONLINE' muy corto.", "cloud_gemini", api_key, no_fallback=True)
+                if hi_cloud: agent_log.log("BRAIN-RESPONSE", hi_cloud.strip().upper())
+
+            # 2. Saludo a Phi-3 Local
+            agent_log.log("OLLAMA", "Saludando a Phi-3 Local...")
+            hi_phi = generate_local("Decí 'PHI3 ONLINE' muy corto.", "phi3")
+            if hi_phi: agent_log.log("OLLAMA-RESPONSE", hi_phi.strip().upper())
+
+            # 3. Saludo a Gemma-3 Local
+            agent_log.log("OLLAMA", "Saludando a Gemma-3 Local...")
+            hi_gemma = generate_local("Decí 'GEMMA3 ONLINE' muy corto.", "gemma3")
+            if hi_gemma: agent_log.log("OLLAMA-RESPONSE", hi_gemma.strip().upper())
+
+            return {"status": "ok"}
         except Exception as e:
-            agent_log.log("GEMINI", f"Error en diagnóstico: {e}", "ERROR")
+            agent_log.log("BRAIN", f"Error en saludo: {e}", "ERROR")
             return {"status": "error", "error": str(e)}
     else:
         agent_log.log("BRAIN", "Brain fue desactivado, todas las IA se suspenden.")
@@ -250,8 +266,10 @@ def api_start_scrape(req: ScrapeRequest):
         "images": [],
         "scraper": None
     }
+    config = get_config()
+    full_path = os.path.join(config["base_dir"], req.dest_folder)
     
-    thread = threading.Thread(target=start_scrape_job, args=(job_id, req.url, req.dest_folder, req.only_large, req.use_ai, req.nicho))
+    thread = threading.Thread(target=start_scrape_job, args=(job_id, req.url, full_path, req.only_large, req.use_ai, req.nicho))
     thread.daemon = True
     thread.start()
     
@@ -359,7 +377,14 @@ def api_classify_existing(req: ClassifyExistingRequest):
 def api_generate_copy(req: CopyRequest):
     config = get_config()
     api_key = config.get("openai_api_key", "")
-    copy_text = generate_copy(req.nicho, req.data, api_key, req.use_ai)
+    
+    # Si use_ai es False, usamos el generador local basado en templates (fallback tradicional)
+    if not req.use_ai:
+        from copy_generator import generate_copy as generate_copy_legacy
+        copy_text = generate_copy_legacy(req.nicho, req.data, api_key, use_ai=False)
+    else:
+        # Si use_ai es True, usamos el nuevo flujo modular con LLM (Ollama o Gemini)
+        copy_text = generate_copy_v2(req.nicho, req.data, api_key, req.engine)
     
     if not copy_text.startswith("⚠️"):
         folder_path = os.path.join(config["base_dir"], req.property_folder)
@@ -384,40 +409,21 @@ def api_generate_copy(req: CopyRequest):
 def api_edit_copy(req: CopyEditRequest):
     config = get_config()
     api_key = config.get("openai_api_key", "")
-    if not api_key:
-        raise HTTPException(status_code=400, detail="Falta configurar Gemini API Key")
-        
-    import google.generativeai as genai
-    import os
-    genai.configure(api_key=api_key)
-    
-    # Configuramos el 'Brain' con una personalidad definida
-    model = genai.GenerativeModel(
-        model_name="models/gemini-2.5-flash",
-        system_instruction="Eres el motor 'Brain' de AGENT.IO. Tu función es editar copys inmobiliarios. "
-                           "Eres experto en marketing de Real Estate. Si el usuario pide cambiar valores "
-                           "numéricos (como precios), hacelo manteniendo el formato Markdown original. "
-                           "Sé conciso y devolvé únicamente el texto editado."
-    )
-    
-    sys_prompt = f"Sos un redactor experto. Editá este copy inmobiliario cumpliendo ESTRICTAMENTE con este pedido: '{req.prompt}'. DEVOLVÉ ÚNICAMENTE EL TEXTO MODIFICADO en Markdown, manteniendo el formato limpio original. No des explicaciones."
-    
     try:
-        sys_inst = model._system_instruction.parts[0].text if hasattr(model, '_system_instruction') else "Experto Real Estate"
+        agent_log.log("BRAIN", f"Editor activo: {req.engine}")
         
-        prompt = f"Este es el copy actual:\n{req.current_copy}\n\nInstrucción del usuario: {req.prompt}"
+        # Construimos un prompt específico para edición
+        edit_prompt = f"Copy actual:\n{req.current_copy}\n\nInstrucción de edición: {req.prompt}\n\nDevolvé únicamente el texto corregido."
         
-        agent_log.log("GEMINI", f"Editor activo: {model.model_name}")
-        agent_log.log("GEMINI-PROMPT", prompt)
+        # Usamos el motor elegido
+        edited_text = generate_with_engine(edit_prompt, req.engine, api_key)
         
-        response = model.generate_content(prompt)
-        
-        agent_log.log("GEMINI-RESPONSE", response.text.strip())
-        agent_log.log("BRAIN", "Gemini 2.5 finalizó. Volviendo a modo Standby (1.5).")
-        
-        return {"copy": response.text.strip()}
+        if not edited_text:
+            raise Exception("El motor no devolvió ninguna edición.")
+            
+        return {"copy": edited_text}
     except Exception as e:
-        agent_log.log("GEMINI", f"Error en chat: {e}", "ERROR")
+        agent_log.log("BRAIN", f"Error en chat: {e}", "ERROR")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/copy/save-docx")
@@ -425,19 +431,62 @@ def api_save_docx(req: SaveCopyRequest):
     config = get_config()
     folder_path = os.path.join(config["base_dir"], req.property_folder)
     if os.path.exists(folder_path):
-        generate_property_doc(
+        success, msg = generate_property_doc(
             folder_path,
             req.title,
             req.copy,
             req.features
         )
-        return {"status": "success"}
+        if success:
+            return {"status": "success", "file": msg}
+        else:
+            raise HTTPException(status_code=500, detail=f"Error guardando docx: {msg}")
     raise HTTPException(status_code=404, detail="Carpeta no encontrada")
 
 @app.post("/api/property/extract")
 def api_extract_property(req: ExtractRequest):
     """Extrae metadatos (título, precio, ubicación, características) de la URL de la propiedad."""
+    # 1. Extracción base (Regex/BS4)
     data = extract_property_data(req.url, req.nicho)
+    
+    # 2. Mejora con IA (si se solicita y hay API Key / Ollama)
+    config = get_config()
+    api_key = config.get("openai_api_key", "")
+    
+    if data.get("extracted") and req.engine:
+        try:
+            agent_log.log("BRAIN", f"Mejorando extracción con motor {req.engine}...")
+            # Pasamos la data base y pedimos al modelo que la limpie o complete basándose en la descripción
+            refine_prompt = (
+                f"Aquí tienes los datos crudos extraídos por un scraper clásico:\n"
+                f"{json_lib.dumps(data, indent=2, ensure_ascii=False)}\n\n"
+                f"Tu tarea es ESTRUCTURAR esta información sin alterar la veracidad de los datos originales. "
+                f"REGLAS DE PRESERVACIÓN ESTRICTA:\n"
+                f"1. PROHIBIDO INVENTAR: No agregues precios, direcciones ni metros cuadrados que no figuren en los datos crudos.\n"
+                f"2. PRESERVAR NÚMEROS: El valor numérico del precio debe mantenerse exacto. Solo puedes limpiar texto adicional (ej: de 'Precio: USD 150.000 (charlables)' a 'USD 150.000').\n"
+                f"3. MANTENER CARACTERÍSTICAS: No elimines ningún ítem de la lista de 'features', solo mejórales el formato si es necesario.\n"
+                f"4. RESCATE DE DATOS: Si el campo 'location' está vacío pero la ubicación se menciona claramente en el 'title' o 'description', completalo.\n"
+                f"Devuelve exclusivamente un objeto JSON puro con las claves: address, price, location, features (lista), operation_type (venta/alquiler) y property_type.\n"
+            )
+            
+            from copy_service import generate_with_engine
+            refined_json = generate_with_engine(refine_prompt, req.engine, api_key)
+            
+            # Intentamos parsear el JSON que devuelva la IA
+            import json as json_lib
+            # Buscamos el primer { y el último } por si la IA agregó texto extra
+            start = refined_json.find('{')
+            end = refined_json.rfind('}') + 1
+            if start != -1 and end != 0:
+                ai_data = json_lib.loads(refined_json[start:end])
+                # Mezclamos (la IA manda)
+                for k in ["address", "price", "location", "features", "operation_type", "property_type"]:
+                    if k in ai_data and ai_data[k]:
+                        data[k] = ai_data[k]
+                agent_log.log("BRAIN", "¡Extracción mejorada por IA con éxito!")
+        except Exception as e:
+            agent_log.log("BRAIN", f"No se pudo mejorar la extracción con IA: {e}", "WARNING")
+
     return data
 
 @app.post("/api/images/export")
@@ -591,57 +640,66 @@ def api_get_history_folder(name: str):
 
 
 @app.get("/api/copy/load")
-def api_load_copy(folder_name: str):
-    """Carga el copy guardado en una carpeta (si existe).
-    Primero busca el .txt plano (generado a partir del refactor).
-    Si no existe, intenta extraer el texto del .docx (compatibilidad con sesiones antiguas).
+def api_load_copy(folder_name: str, filename: str = None):
+    """Carga el copy guardado en una carpeta.
+    Si se especifica 'filename', carga ese archivo exacto.
+    Si no, carga el más reciente y devuelve la lista de todas las versiones disponibles.
     """
     folder_path = os.path.join(get_config()["base_dir"], folder_name)
+    if not os.path.exists(folder_path):
+        raise HTTPException(status_code=404, detail="Carpeta no encontrada")
 
-    copy_found_text = None
+    # 1. Buscar todas las versiones de .docx disponibles
+    all_files = os.listdir(folder_path)
+    docx_versions = sorted([
+        f for f in all_files 
+        if f.startswith("copy_propiedad") and f.endswith(".docx")
+    ], key=lambda x: (len(x), x), reverse=True) # El base queda abajo, los V10 arriba
 
-    # 1. Archivo .txt (el más fácil)
-    txt_path = os.path.join(folder_path, "copy_propiedad.txt")
-    if os.path.exists(txt_path):
-        try:
-            with open(txt_path, "r", encoding="utf-8") as f:
+    target_file = filename if filename else (docx_versions[0] if docx_versions else "copy_propiedad.txt")
+    copy_found_text = ""
+    
+    # 2. Cargar el contenido
+    file_path = os.path.join(folder_path, target_file)
+    if not os.path.exists(file_path) and not filename:
+        # Si no existe el docx, intentamos con el .txt plano
+        file_path = os.path.join(folder_path, "copy_propiedad.txt")
+
+    if os.path.exists(file_path):
+        if file_path.endswith(".txt"):
+            with open(file_path, "r", encoding="utf-8") as f:
                 copy_found_text = f.read().strip()
-        except Exception as e:
-            print(f"[Copy] Error leyendo .txt: {e}")
-
-    # 2. Fallback: extraer texto del .docx (sesiones anteriores al refactor)
-    docx_path = os.path.join(folder_path, "copy_propiedad.docx")
-    if os.path.exists(docx_path):
-        try:
-            from docx import Document as DocxDocument
-            doc = DocxDocument(docx_path)
-            # Busco el heading "Descripción" y extraigo el párrafo siguiente
-            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-            # Si el último heading es "Descripción", tomo todo lo que viene después
+        elif file_path.endswith(".docx"):
             try:
-                desc_idx = next(i for i, t in enumerate(paragraphs) if t.strip() == "Descripción")
-                copy_text = "\n".join(paragraphs[desc_idx + 1:])
-            except StopIteration:
-                # No hay sección Descripción — tomo todos los párrafos como fallback
-                copy_text = "\n".join(paragraphs)
-            copy_found_text = copy_text.strip()
-        except Exception as e:
-            print(f"[Copy] Error extrayendo texto del .docx: {e}")
+                from docx import Document as DocxDocument
+                doc = DocxDocument(file_path)
+                paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+                # Si el docx tiene estructura (Descripción), extraemos eso
+                try:
+                    desc_idx = next(i for i, t in enumerate(paragraphs) if t.strip() == "Descripción")
+                    copy_found_text = "\n".join(paragraphs[desc_idx + 1:]).strip()
+                except StopIteration:
+                    copy_found_text = "\n".join(paragraphs).strip()
+            except Exception as e:
+                print(f"[Copy] Error leyendo {target_file}: {e}")
 
-    # 3. Intentamos cargar la info original de la propiedad para regenerar copys
+    # 3. Cargar metadatos para llenar campos
     raw_data = None
     data_path = os.path.join(folder_path, "property_data.json")
     if os.path.exists(data_path):
         try:
             with open(data_path, "r", encoding="utf-8") as f:
                 raw_data = json.load(f)
-        except Exception as e:
-            print(f"[Copy] Error cargando property_data.json: {e}")
+        except: pass
 
-    if copy_found_text:
-        return {"copy": copy_found_text, "found": True, "source": "txt/docx", "raw_data": raw_data}
-    
-    return {"copy": "", "found": False, "source": None, "raw_data": raw_data}
+    return {
+        "copy": copy_found_text,
+        "found": bool(copy_found_text),
+        "filename": target_file,
+        "versions": docx_versions,
+        "raw_data": raw_data,
+        "url": raw_data.get("url") if raw_data else None
+    }
 
 @app.get("/api/logs")
 def api_get_logs(limit: int = 100):

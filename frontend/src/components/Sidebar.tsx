@@ -74,7 +74,14 @@ export default function Sidebar({
               <ImageIcon className="w-5 h-5 flex-shrink-0" />
             )}
           </div>
-              SCRAP.IO
+          <div className="flex flex-col">
+            <span>SCRAP.IO</span>
+            <div className="flex gap-1.5 mt-1">
+              <div title="Phi-3 (Local)" className={`w-1.5 h-1.5 rounded-full ${config.phi3Status === 'online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500/30'}`} />
+              <div title="Gemma-3 (Local)" className={`w-1.5 h-1.5 rounded-full ${config.gemma3Status === 'online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500/30'}`} />
+              <div title="Gemini (Cloud)" className={`w-1.5 h-1.5 rounded-full ${config.openaiApiKey ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500/30'}`} />
+            </div>
+          </div>
         </h1>
       </div>
 
@@ -174,6 +181,27 @@ export default function Sidebar({
                     onChange={job.setOnlyLarge}
                     className="px-1 py-1"
                   />
+
+                  <Toggle 
+                    label="Mejorar datos con IA (Brain)"
+                    enabled={copy.isExtractionAiEnabled}
+                    onChange={copy.setIsExtractionAiEnabled}
+                    className="px-1 py-1"
+                  />
+
+                  {copy.isExtractionAiEnabled && (
+                    <div className="pt-1 pb-2">
+                      <select
+                        value={copy.extractionEngine}
+                        onChange={e => copy.setExtractionEngine(e.target.value)}
+                        className="w-full bg-input border border-border rounded-lg text-[10px] font-bold text-foreground py-2 px-3 appearance-none focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-all shadow-sm"
+                      >
+                        <option value="local_phi3">Phi-3 (Local)</option>
+                        <option value="local_gemma3">Gemma 3 (Local)</option>
+                        <option value="cloud_gemini">Gemini 1.5 (Cloud)</option>
+                      </select>
+                    </div>
+                  )}
 
                   <button
                     onClick={job.status.is_running ? job.stopScrape : () => job.startScrape(url, propertyName)}
@@ -292,11 +320,10 @@ export default function Sidebar({
                       
                       {job.useAI && job.aiModelReady && (
                         <div className="pt-2">
-                          <label className="text-xs font-medium text-muted-foreground ml-1 mb-1.5 block">Nicho de Redacción</label>
                           <select
                             value={job.nicho}
                             onChange={e => job.setNicho(e.target.value)}
-                            className="w-full bg-input border border-border rounded-lg text-xs font-bold text-foreground py-2 px-3 appearance-none focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-all shadow-sm"
+                            className="w-full bg-input border border-border rounded-lg text-xs font-bold text-foreground py-2 px-3 appearance-none focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-all shadow-sm mb-3"
                           >
                             <option value="inmobiliaria">Inmobiliaria</option>
                             <option value="gastronomia">Gastronomía</option>
@@ -317,6 +344,23 @@ export default function Sidebar({
                   <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Generador de Copy</p>
                 </div>
                 <div className="space-y-3">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-medium text-muted-foreground ml-1 block">Link de la Propiedad</label>
+                      {copy.isExtracting && (
+                        <span className="text-[9px] font-bold text-primary flex items-center gap-1 animate-pulse">
+                          <Loader2 className="w-2.5 h-2.5 animate-spin" /> Auto-completando...
+                        </span>
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      value={url}
+                      onChange={e => setUrl(e.target.value)}
+                      placeholder="Pegá el link acá para rellenar datos..."
+                      className="w-full bg-input border border-primary/30 rounded-lg py-2.5 px-3 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary transition-all shadow-sm"
+                    />
+                  </div>
                   <div>
                     <label className="text-xs font-medium text-muted-foreground ml-1 mb-1 block">Dirección</label>
                     <input
@@ -371,6 +415,21 @@ export default function Sidebar({
                     />
                   </div>
 
+                  {config.isAiEnabled && (
+                    <div className="pt-2 pb-2">
+                      <label className="text-xs font-medium text-muted-foreground ml-1 mb-1.5 block">Motor Inteligente</label>
+                      <select
+                        value={copy.generationEngine}
+                        onChange={e => copy.setGenerationEngine(e.target.value)}
+                        className="w-full bg-input border border-border rounded-lg text-xs font-bold text-foreground py-2 px-3 appearance-none focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-all shadow-sm"
+                      >
+                        <option value="local_phi3">Phi-3 (Local - Rápido)</option>
+                        <option value="local_gemma3">Gemma 3 (Local - Potente)</option>
+                        <option value="cloud_gemini">Gemini 1.5 (Cloud - Full)</option>
+                      </select>
+                    </div>
+                  )}
+
                   <button
                     onClick={() => copy.generateCopy(job.nicho, propertyName)}
                     disabled={copy.isGeneratingCopy}
@@ -381,10 +440,8 @@ export default function Sidebar({
                       : <><Send className="w-4 h-4" /> {config.isAiEnabled ? 'Generar Publicación con Brain' : 'Generar Publicación'}</>
                     }
                   </button>
-                  <p className="text-[9px] text-center text-muted-foreground/60">
-                    {config.isAiEnabled && config.openaiApiKey 
-                      ? "🤖 Modo Gemini Flash activo" 
-                      : "💬 Modo template local activo"}
+                  <p className="text-[9px] text-center text-muted-foreground/60 uppercase font-bold tracking-widest mt-1">
+                    {copy.generationEngine === 'cloud_gemini' ? '🛰️ Cloud Engine' : '🏠 Local Engine'}
                   </p>
                 </div>
               </section>

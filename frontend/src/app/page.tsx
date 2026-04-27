@@ -31,16 +31,24 @@ export default function Home() {
       setUrl("");
       setPropertyName("");
     };
+    const handleUrlLoaded = (e: Event) => {
+      const customEvent = e as CustomEvent<string>;
+      if (customEvent.detail) setUrl(customEvent.detail);
+    };
     window.addEventListener("imgscrap:folder-suggest", handleSuggest);
     window.addEventListener("imgscrap:clear-all", handleClear);
+    window.addEventListener("imgscrap:url-loaded", handleUrlLoaded);
     return () => {
       window.removeEventListener("imgscrap:folder-suggest", handleSuggest);
       window.removeEventListener("imgscrap:clear-all", handleClear);
+      window.removeEventListener("imgscrap:url-loaded", handleUrlLoaded);
     };
   }, []);
 
   return (
-    <div className={`flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/20 transition-colors duration-500 ${activeTab === 'brain' ? 'brain-mode' : ''} ${config.isAiEnabled ? 'brain-enabled' : ''}`}>
+    <div className={`flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/20 transition-colors duration-500 
+      ${(config.isAiEnabled || copy.isExtractionAiEnabled) ? 'brain-enabled' : ''} 
+      ${(activeTab === 'brain' && config.isAiEnabled) ? 'brain-mode' : ''}`}>
       
       <div className="flex flex-1 overflow-hidden">
         <Sidebar
@@ -89,7 +97,11 @@ export default function Home() {
                       {config.isAiEnabled ? (
                         <span className="flex items-center gap-1.5 uppercase">
                           BRAIN: 
-                          <span className="opacity-70">GEMINI {copy.geminiVersion}</span>
+                          <span className="opacity-70">
+                            {copy.generationEngine === 'local_phi3' ? 'PHI-3 LOCAL' : 
+                             copy.generationEngine === 'local_gemma3' ? 'GEMMA 3 LOCAL' : 
+                             'GEMINI CLOUD'}
+                          </span>
                           {job.useAI && (
                             <>
                               <span className="w-1 h-1 rounded-full bg-primary/40" /> 
@@ -128,7 +140,7 @@ export default function Home() {
                 {/* Espacio extra para info técnica o tips */}
                 <div className="mt-8 p-4 rounded-xl bg-muted/30 border border-border/50 border-dashed">
                    <p className="text-[10px] text-muted-foreground leading-relaxed">
-                     <strong>Tip:</strong> El copy se genera automáticamente usando <b>Gemini 1.5 Flash</b>. Podés editar los campos en la sidebar izquierda y presionar "Generar Publicación" para crear una versión nueva instantáneamente.
+                     <strong>Tip:</strong> El copy se genera automáticamente usando el motor <b>{copy.generationEngine.includes('local') ? 'Local' : 'Cloud'}</b>. Podés editar los campos en la sidebar izquierda y presionar "Generar Publicación" para crear una versión nueva instantáneamente.
                    </p>
                 </div>
               </div>

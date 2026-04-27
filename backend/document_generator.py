@@ -62,11 +62,23 @@ def generate_property_doc(path, title, description, details_list=None):
                 for run in p.runs:
                     run.bold = True
 
-        # Guardo el .docx
-        docx_path = os.path.join(path, "copy_propiedad.docx")
+        # Determinamos el nombre del archivo con versionado
+        base_name = "copy_propiedad"
+        extension = ".docx"
+        
+        # Si el archivo base no existe, lo creamos
+        docx_path = os.path.join(path, f"{base_name}{extension}")
+        
+        if os.path.exists(docx_path):
+            # Si ya existe, buscamos la siguiente versión disponible
+            v = 2
+            while os.path.exists(os.path.join(path, f"{base_name}_V{v}{extension}")):
+                v += 1
+            docx_path = os.path.join(path, f"{base_name}_V{v}{extension}")
+            
         doc.save(docx_path)
 
-        # Guardo también un .txt plano
+        # Guardo también un .txt plano (siempre sobreescribe el 'último' para carga rápida)
         txt_path = os.path.join(path, "copy_propiedad.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(description)

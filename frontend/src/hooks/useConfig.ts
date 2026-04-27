@@ -15,6 +15,8 @@ export interface Config {
   apiInput: string;
   showConsole: boolean;
   isAiEnabled: boolean;
+  phi3Status: "online" | "offline" | "loading";
+  gemma3Status: "online" | "offline" | "loading";
 }
 
 export interface ConfigActions {
@@ -40,6 +42,8 @@ export function useConfig(): Config & ConfigActions {
   const [apiInput, setApiInput] = useState("");
   const [showConsole, setShowConsole] = useState(false);
   const [isAiEnabled, setIsAiEnabled] = useState(false);
+  const [phi3Status, setPhi3Status] = useState<"online" | "offline" | "loading">("loading");
+  const [gemma3Status, setGemma3Status] = useState<"online" | "offline" | "loading">("loading");
 
   // Cargar preferencias al montar
   useEffect(() => {
@@ -126,6 +130,32 @@ export function useConfig(): Config & ConfigActions {
     return null;
   }, []);
 
+  // Monitorear estado de modelos locales (ping a Ollama)
+  useEffect(() => {
+    const checkModels = async () => {
+      if (!isAiEnabled) return;
+      try {
+        const res = await fetch("http://localhost:11434/api/tags");
+        if (res.ok) {
+          const data = await res.json();
+          const models = data.models?.map((m: any) => m.name.split(':')[0]) || [];
+          setPhi3Status(models.includes("phi3") ? "online" : "offline");
+          setGemma3Status(models.includes("gemma3") ? "online" : "offline");
+        } else {
+          setPhi3Status("offline");
+          setGemma3Status("offline");
+        }
+      } catch {
+        setPhi3Status("offline");
+        setGemma3Status("offline");
+      }
+    };
+
+    checkModels();
+    const interval = setInterval(checkModels, 10000);
+    return () => clearInterval(interval);
+  }, [isAiEnabled]);
+
   // Al montar, cargo el historial
   useEffect(() => { 
     const timer = setTimeout(() => {
@@ -154,5 +184,7 @@ export function useConfig(): Config & ConfigActions {
     setShowConsole,
     isAiEnabled,
     setIsAiEnabled,
+    phi3Status,
+    gemma3Status,
   };
 }

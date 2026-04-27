@@ -9,7 +9,8 @@ interface CopyPanelProps {
   propertyName: string;
   copy: Pick<CopyGeneratorState, 
     "generatedCopy" | "setGeneratedCopy" | "copyCopyToClipboard" | 
-    "isEditingCopy" | "isGeneratingCopy" | "editCopy" | "saveDocx"
+    "isEditingCopy" | "isGeneratingCopy" | "editCopy" | "saveDocx" | "editEngine" | "setEditEngine" |
+    "versions" | "currentFilename" | "loadSpecificVersion"
   >;
 }
 
@@ -161,11 +162,29 @@ export default function CopyPanel({ copy, propertyName }: CopyPanelProps) {
 
           {/* Header */}
           <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <Send className="w-4 h-4 text-primary" />
-              <h3 className="text-sm font-bold text-foreground uppercase tracking-widest">
-                Publicación Generada
-              </h3>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Send className="w-4 h-4 text-primary" />
+                <h3 className="text-sm font-bold text-foreground uppercase tracking-widest">
+                  Publicación Generada
+                </h3>
+              </div>
+              
+              {/* Selector de Versiones */}
+              {(copy as any).versions?.length > 1 && (
+                <div className="flex items-center gap-2 bg-secondary/50 px-2 py-1 rounded-lg border border-border/50">
+                  <span className="text-[9px] font-bold text-muted-foreground uppercase">Ver:</span>
+                  <select 
+                    value={(copy as any).currentFilename}
+                    onChange={(e) => (copy as any).loadSpecificVersion(propertyName, e.target.value)}
+                    className="bg-transparent text-[10px] font-black text-primary focus:outline-none cursor-pointer"
+                  >
+                    {(copy as any).versions.map((v: string) => (
+                      <option key={v} value={v} className="bg-card text-foreground">{v.replace("copy_propiedad", "VERSIÓN").replace(".docx", "")}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
             <div className="flex gap-2">
               <button
@@ -217,6 +236,15 @@ export default function CopyPanel({ copy, propertyName }: CopyPanelProps) {
                 <Sparkles className="w-3.5 h-3.5" /> Edición con IA
              </label>
              <div className="flex gap-2">
+                <select
+                  value={copy.editEngine}
+                  onChange={(e) => copy.setEditEngine(e.target.value)}
+                  className="bg-input border border-border rounded-lg text-[10px] font-bold px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary text-muted-foreground appearance-none cursor-pointer hover:text-foreground transition-colors"
+                >
+                  <option value="cloud_gemini">Gemini Cloud</option>
+                  <option value="local_gemma3">Gemma 3 Local</option>
+                  <option value="local_phi3">Phi-3 Local</option>
+                </select>
                 <input 
                   type="text" 
                   value={prompt}

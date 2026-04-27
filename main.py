@@ -33,7 +33,7 @@ def start_servers():
     processes.append(p_frontend)
 
 def kill_servers():
-    print("\nCerrando servidores...")
+    print("\nCerrando Scrap.io...")
     for p in processes:
         try:
             subprocess.run(
@@ -45,12 +45,12 @@ def kill_servers():
         except Exception as e:
             print(f"Error cerrando proceso {p.pid}: {e}")
 
-def check_server(timeout=90):
+def check_server(timeout=180):
     print(f"Esperando Next.js en puerto 3000...")
     for _ in range(timeout):
         try:
             urllib.request.urlopen("http://localhost:3000", timeout=2)
-            print("¡Servidores listos!")
+            print("¡Scrap.io esta lista!")
             return True
         except:
             time.sleep(1)
@@ -61,7 +61,7 @@ if __name__ == '__main__':
         start_servers()
         if check_server():
             window = webview.create_window(
-                title='IMG Scraper Pro',
+                title='Scrap.io',
                 url='http://localhost:3000',
                 width=1280,
                 height=820,
