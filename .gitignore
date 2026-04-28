@@ -21,3 +21,8 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+#skeleton
+skeleton.txt
+skeleton_copy_animation.html
+SkeletonCopy.tsx
